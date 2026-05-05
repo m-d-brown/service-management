@@ -1,0 +1,27 @@
+version: "3"
+
+tasks:
+  build:
+    desc: Build the binary
+    cmds:
+      - go build -o bin/container-version-snapshot ./cmd/container-version-snapshot
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test -v ./...
+
+  lint:
+    desc: Run linter (requires golangci-lint)
+    cmds:
+      - golangci-lint run ./...
+
+  tidy:
+    desc: Tidy go modules
+    cmds:
+      - go mod tidy
+
+  install:
+    desc: Install the binary to GOBIN
+    cmds:
+      - go install ./cmd/container-version-snapshot
