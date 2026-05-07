@@ -136,3 +136,36 @@ func TestIsTransientNetErr(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildSnapshot(t *testing.T) {
+	targets := []Target{
+		{Alias: "user@host1", Sudo: false},
+		{Alias: "admin@host2", Sudo: true},
+	}
+	
+	rows := []snapshot.ContainerInfo{
+		{Host: "host2", Container: "web-proxy"},
+	}
+	
+	snap := buildSnapshot(targets, rows)
+	
+	if len(snap.Targets) != 2 {
+		t.Fatalf("Expected 2 targets, got %d", len(snap.Targets))
+	}
+	
+	if snap.Targets[0].Host != "host1" || snap.Targets[0].User != "user" || snap.Targets[0].Sudo != false {
+		t.Errorf("Target 0 mismatch: %+v", snap.Targets[0])
+	}
+	
+	if snap.Targets[1].Host != "host2" || snap.Targets[1].User != "admin" || snap.Targets[1].Sudo != true {
+		t.Errorf("Target 1 mismatch: %+v", snap.Targets[1])
+	}
+	
+	if len(snap.Containers) != 1 {
+		t.Fatalf("Expected 1 container row, got %d", len(snap.Containers))
+	}
+	
+	if snap.Timestamp.IsZero() {
+		t.Errorf("Expected non-zero timestamp")
+	}
+}
