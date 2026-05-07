@@ -34,10 +34,12 @@ type Target struct {
 
 type stringSlice []string
 
+// String returns a comma-separated representation of the string slice.
 func (s *stringSlice) String() string {
 	return strings.Join(*s, ", ")
 }
 
+// Set appends a value to the string slice, implementing the flag.Value interface.
 func (s *stringSlice) Set(value string) error {
 	*s = append(*s, value)
 	return nil
@@ -45,9 +47,13 @@ func (s *stringSlice) Set(value string) error {
 
 // HostResult holds the data collected from a host
 type HostResult struct {
+	// Host is the address or alias of the target machine.
 	Host       string
+	// Containers holds metadata for all inspected containers on the host.
 	Containers []snapshot.InspectedContainer
+	// Images holds metadata for all inspected images on the host.
 	Images     []snapshot.InspectedImage
+	// Error captures any error encountered during collection.
 	Error      error
 }
 
@@ -82,11 +88,13 @@ func dialSSH(hostAlias string, authMethods []ssh.AuthMethod) (*ssh.Client, strin
 	return client, target, err
 }
 
+// isTransientNetErr determines if an error is a temporary network issue that might succeed on retry.
 func isTransientNetErr(err error) bool {
 	var opErr *net.OpError
 	return errors.As(err, &opErr)
 }
 
+// createSSHClient establishes an SSH connection to the specified host with retries.
 func createSSHClient(hostAlias string, authMethods []ssh.AuthMethod) (*ssh.Client, error) {
 	b := retry.WithMaxRetries(2, retry.WithJitterPercent(100, retry.NewExponential(3*time.Second)))
 
@@ -109,6 +117,7 @@ func createSSHClient(hostAlias string, authMethods []ssh.AuthMethod) (*ssh.Clien
 	return client, nil
 }
 
+// runSSHCommand executes a single shell command over an established SSH connection and returns its stdout.
 func runSSHCommand(client *ssh.Client, cmd string) (string, error) {
 	session, err := client.NewSession()
 	if err != nil {
@@ -124,6 +133,7 @@ func runSSHCommand(client *ssh.Client, cmd string) (string, error) {
 	return stdout.String(), nil
 }
 
+// getAuthMethods discovers and configures SSH authentication methods (agent and keys).
 func getAuthMethods() []ssh.AuthMethod {
 	var methods []ssh.AuthMethod
 
@@ -155,6 +165,7 @@ func getAuthMethods() []ssh.AuthMethod {
 	return methods
 }
 
+// splitUserHost separates an SSH alias into a username and hostname component.
 func splitUserHost(hostAlias string) (string, string) {
 	if strings.Contains(hostAlias, "@") {
 		parts := strings.SplitN(hostAlias, "@", 2)
@@ -216,6 +227,7 @@ func collectFromContext(client *ssh.Client, sudo bool) ([]snapshot.InspectedCont
 	return containers, images, nil
 }
 
+// collectFromHost orchestrates the collection of container and image data from a specific target host over SSH.
 func collectFromHost(target Target, client *ssh.Client) HostResult {
 	_, hostOnly := splitUserHost(target.Alias)
 	res := HostResult{Host: hostOnly}
@@ -232,6 +244,7 @@ func collectFromHost(target Target, client *ssh.Client) HostResult {
 	return res
 }
 
+// processHostData transforms raw host collection data into structured container info rows, resolving versions if necessary.
 func processHostData(ctx context.Context, data HostResult, client snapshot.RegistryClient) []snapshot.ContainerInfo {
 	var rows []snapshot.ContainerInfo
 
@@ -272,6 +285,7 @@ func processHostData(ctx context.Context, data HostResult, client snapshot.Regis
 	return rows
 }
 
+// printJSON encodes and prints the final snapshot data to stdout.
 func printJSON(snap snapshot.Snapshot) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -280,6 +294,7 @@ func printJSON(snap snapshot.Snapshot) {
 	}
 }
 
+// buildSnapshot constructs the final top-level Snapshot structure from targets and container infos.
 func buildSnapshot(targets []Target, allRows []snapshot.ContainerInfo) snapshot.Snapshot {
 	var targetInfos []snapshot.Target
 	for _, t := range targets {
