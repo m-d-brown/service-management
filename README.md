@@ -9,10 +9,12 @@ A Go tool to snapshot container versions across multiple hosts via SSH.
 - Resolves versions from OCI labels or registry lookup.
 - Outputs a structured JSON snapshot.
 
+
+
 ## Usage
 
 ```shell
-./bin/container-version-snapshot host1 host2 ...
+./bin/container-version-snapshot --host user@host1 --sudo-host user@host2
 ```
 
 ## Development

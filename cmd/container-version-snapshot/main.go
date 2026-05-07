@@ -24,6 +24,25 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
+// Target represents a host to scan and its configuration
+type Target struct {
+	// Alias is the SSH connection string (e.g., user@host)
+	Alias string
+	// Sudo indicates whether to run podman commands with elevated privileges
+	Sudo bool
+}
+
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+	return strings.Join(*s, ", ")
+}
+
+func (s *stringSlice) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
+
 // HostResult holds the data collected from a host
 type HostResult struct {
 	Host       string
@@ -144,54 +163,71 @@ func splitUserHost(hostAlias string) (string, string) {
 	return "", hostAlias
 }
 
-func collectFromHost(hostAlias string, client *ssh.Client) HostResult {
-	res := HostResult{Host: hostAlias}
-
-	ids, err := runSSHCommand(client, "podman ps -q")
+// collectFromContext gathers container and image information using the given SSH client.
+// The sudo argument allows running podman commands with "sudo -n " prepended.
+func collectFromContext(client *ssh.Client, sudo bool) ([]snapshot.InspectedContainer, []snapshot.InspectedImage, error) {
+	prefix := ""
+	if sudo {
+		prefix = "sudo -n "
+	}
+	ids, err := runSSHCommand(client, prefix+"podman ps -q")
 	if err != nil {
-		res.Error = fmt.Errorf("failed to list containers: %w", err)
-		return res
+		return nil, nil, err
 	}
 	idList := strings.Fields(ids)
 	if len(idList) == 0 {
-		return res
+		return nil, nil, nil
 	}
 
-	inspectCmd := "podman inspect " + strings.Join(idList, " ")
+	inspectCmd := prefix + "podman inspect " + strings.Join(idList, " ")
 	inspectJSON, err := runSSHCommand(client, inspectCmd)
 	if err != nil {
-		res.Error = fmt.Errorf("failed to inspect containers: %w", err)
-		return res
+		return nil, nil, fmt.Errorf("failed to inspect containers: %w", err)
 	}
 
-	if err := json.Unmarshal([]byte(inspectJSON), &res.Containers); err != nil {
-		res.Error = fmt.Errorf("failed to parse container json: %w", err)
-		return res
+	var containers []snapshot.InspectedContainer
+	if err := json.Unmarshal([]byte(inspectJSON), &containers); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse container json: %w", err)
 	}
 
 	imageIDs := make(map[string]bool)
-	for _, c := range res.Containers {
+	for _, c := range containers {
 		if c.ImageDigest != "" {
 			imageIDs[c.ImageDigest] = true
 		}
 	}
 
+	var images []snapshot.InspectedImage
 	if len(imageIDs) > 0 {
 		var imgArgs []string
 		for id := range imageIDs {
 			imgArgs = append(imgArgs, id)
 		}
-		imgInspectCmd := "podman image inspect " + strings.Join(imgArgs, " ")
+		imgInspectCmd := prefix + "podman image inspect " + strings.Join(imgArgs, " ")
 		imgJSON, err := runSSHCommand(client, imgInspectCmd)
 		if err != nil {
-			res.Error = fmt.Errorf("failed to inspect images: %w", err)
-			return res
+			return nil, nil, fmt.Errorf("failed to inspect images: %w", err)
 		}
-		if err := json.Unmarshal([]byte(imgJSON), &res.Images); err != nil {
-			res.Error = fmt.Errorf("failed to parse image json: %w", err)
-			return res
+		if err := json.Unmarshal([]byte(imgJSON), &images); err != nil {
+			return nil, nil, fmt.Errorf("failed to parse image json: %w", err)
 		}
 	}
+
+	return containers, images, nil
+}
+
+func collectFromHost(target Target, client *ssh.Client) HostResult {
+	_, hostOnly := splitUserHost(target.Alias)
+	res := HostResult{Host: hostOnly}
+
+	containers, images, err := collectFromContext(client, target.Sudo)
+	if err != nil {
+		res.Error = fmt.Errorf("failed to list containers: %w", err)
+		return res
+	}
+
+	res.Containers = containers
+	res.Images = images
 
 	return res
 }
@@ -244,33 +280,66 @@ func printJSON(snap snapshot.Snapshot) {
 	}
 }
 
-func main() {
-	flag.Parse()
-	hosts := flag.Args()
+func buildSnapshot(targets []Target, allRows []snapshot.ContainerInfo) snapshot.Snapshot {
+	var targetInfos []snapshot.Target
+	for _, t := range targets {
+		explicitUser, hostOnly := splitUserHost(t.Alias)
+		targetInfos = append(targetInfos, snapshot.Target{
+			Host: hostOnly,
+			User: explicitUser,
+			Sudo: t.Sudo,
+		})
+	}
 
-	if len(hosts) == 0 {
-		log.Fatal("Usage: container-version-snapshot <host1> <host2> ...")
+	return snapshot.Snapshot{
+		Timestamp:  time.Now(),
+		Targets:    targetInfos,
+		Containers: allRows,
+	}
+}
+
+func main() {
+	var hosts stringSlice
+	var sudoHosts stringSlice
+
+	flag.Var(&hosts, "host", "Host to scan (can be specified multiple times)")
+	flag.Var(&hosts, "t", "Alias for -host")
+	flag.Var(&sudoHosts, "sudo-host", "Host to scan using sudo for podman (can be specified multiple times)")
+	flag.Var(&sudoHosts, "s", "Alias for -sudo-host")
+
+	flag.Parse()
+
+	if len(hosts) == 0 && len(sudoHosts) == 0 {
+		log.Fatal("Usage: container-version-snapshot [--host <host>] [--sudo-host <host>] ...")
+	}
+
+	var targets []Target
+	for _, h := range hosts {
+		targets = append(targets, Target{Alias: h, Sudo: false})
+	}
+	for _, h := range sudoHosts {
+		targets = append(targets, Target{Alias: h, Sudo: true})
 	}
 
 	authMethods := getAuthMethods()
 	registryClient := &snapshot.RealRegistryClient{}
 
 	var wg sync.WaitGroup
-	results := make(chan HostResult, len(hosts))
+	results := make(chan HostResult, len(targets))
 
-	for _, host := range hosts {
+	for _, target := range targets {
 		wg.Add(1)
-		go func(h string) {
+		go func(t Target) {
 			defer wg.Done()
-			_, hostOnly := splitUserHost(h)
-			client, err := createSSHClient(h, authMethods)
+			_, hostOnly := splitUserHost(t.Alias)
+			client, err := createSSHClient(t.Alias, authMethods)
 			if err != nil {
 				results <- HostResult{Host: hostOnly, Error: err}
 				return
 			}
 			defer func() { _ = client.Close() }()
-			results <- collectFromHost(hostOnly, client)
-		}(host)
+			results <- collectFromHost(t, client)
+		}(target)
 	}
 
 	go func() {
@@ -300,11 +369,7 @@ func main() {
 		return allRows[i].Container < allRows[j].Container
 	})
 
-	snap := snapshot.Snapshot{
-		Timestamp:  time.Now(),
-		Targets:    hosts,
-		Containers: allRows,
-	}
+	snap := buildSnapshot(targets, allRows)
 
 	printJSON(snap)
 }

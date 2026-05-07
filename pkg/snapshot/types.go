@@ -46,9 +46,16 @@ type ContainerInfo struct {
 	Error      string         `json:"error,omitempty"`
 }
 
+// Target represents a scanned host and its context
+type Target struct {
+	Host string `json:"host"`
+	User string `json:"user,omitempty"`
+	Sudo bool   `json:"sudo"`
+}
+
 // Snapshot is the top-level JSON output structure.
 type Snapshot struct {
 	Timestamp  time.Time       `json:"timestamp"`
-	Targets    []string        `json:"targets"`
+	Targets    []Target        `json:"targets"`
 	Containers []ContainerInfo `json:"containers"`
 }
