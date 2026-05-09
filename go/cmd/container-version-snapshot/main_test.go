@@ -142,29 +142,29 @@ func TestBuildSnapshot(t *testing.T) {
 		{Alias: "user@nas", Sudo: false},
 		{Alias: "admin@pie", Sudo: true},
 	}
-	
+
 	rows := []snapshot.ContainerInfo{
 		{Host: "pie", Container: "grafana"},
 	}
-	
+
 	snap := buildSnapshot(targets, rows)
-	
+
 	if len(snap.Targets) != 2 {
 		t.Fatalf("Expected 2 targets, got %d", len(snap.Targets))
 	}
-	
+
 	if snap.Targets[0].Host != "nas" || snap.Targets[0].User != "user" || snap.Targets[0].Sudo != false {
 		t.Errorf("Target 0 mismatch: %+v", snap.Targets[0])
 	}
-	
+
 	if snap.Targets[1].Host != "pie" || snap.Targets[1].User != "admin" || snap.Targets[1].Sudo != true {
 		t.Errorf("Target 1 mismatch: %+v", snap.Targets[1])
 	}
-	
+
 	if len(snap.Containers) != 1 {
 		t.Fatalf("Expected 1 container row, got %d", len(snap.Containers))
 	}
-	
+
 	if snap.Timestamp.IsZero() {
 		t.Errorf("Expected non-zero timestamp")
 	}
