@@ -1,0 +1,88 @@
+# ==============================================================================
+# PRE-COMMIT CONFIGURATION
+# ==============================================================================
+# This file dictates what checks run locally on your machine before a commit
+# is finalized. By catching issues early, we keep our CI pipeline fast and green.
+#
+# To manually run these checks on all files, use:
+#   task lint
+#
+# To bypass these checks during an emergency commit, use:
+#   git commit --no-verify
+# ==============================================================================
+
+repos:
+  # ----------------------------------------------------------------------------
+  # GENERIC FILE CHECKS
+  # ----------------------------------------------------------------------------
+  # These hooks catch basic whitespace and syntax issues across all file types.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      # Removes trailing whitespaces at the ends of lines.
+      - id: trailing-whitespace
+      # Ensures that every file ends with exactly one newline.
+      - id: end-of-file-fixer
+      # Validates YAML syntax to prevent broken CI configurations.
+      - id: check-yaml
+      # Prevents accidental commits of giant files (e.g., binaries, large datasets).
+      - id: check-added-large-files
+
+  # ----------------------------------------------------------------------------
+  # GO LINTING & FORMATTING
+  # ----------------------------------------------------------------------------
+  # golangci-lint is the standard Go linter. It runs dozens of checks simultaneously.
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.59.0
+    hooks:
+      - id: golangci-lint
+        # We give the linter a generous timeout to prevent it from failing
+        # prematurely on slower machines during the first cached run.
+        args: ["--timeout", "5m"]
+        # Because our Go code lives in a subdirectory (go/), we must tell
+        # the hook to enter that directory before running.
+        entry: bash -c 'cd go && golangci-lint run ./...'
+        language: system
+        types: [go]
+        # We pass false because golangci-lint is designed to run on the entire
+        # module at once, rather than specific files passed by pre-commit.
+        pass_filenames: false
+
+  # ----------------------------------------------------------------------------
+  # PYTHON LINTING & FORMATTING
+  # ----------------------------------------------------------------------------
+  # Ruff is an extremely fast Python linter and formatter written in Rust.
+  # It replaces flake8, black, isort, and others.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.8
+    hooks:
+      # The Ruff linter. We pass `--fix` so it automatically resolves
+      # trivial issues (like unused imports) instead of just complaining.
+      - id: ruff
+        args: [--fix]
+      # The Ruff formatter (replaces 'black'). Ensures consistent code style.
+      - id: ruff-format
+
+  # ----------------------------------------------------------------------------
+  # PYTHON TYPE CHECKING
+  # ----------------------------------------------------------------------------
+  # mypy enforces static typing in Python, catching bugs before runtime.
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        # We ignore missing imports because pre-commit runs mypy in an isolated
+        # environment that doesn't have our 3rd-party dependencies installed.
+        args: [--ignore-missing-imports]
+
+  # ----------------------------------------------------------------------------
+  # MARKDOWN & CONFIG FORMATTING
+  # ----------------------------------------------------------------------------
+  # Prettier is an opinionated code formatter that keeps our Markdown and YAML
+  # files consistently structured and readable.
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+        # We only want prettier to format markdown and yaml.
+        types_or: [markdown, yaml]

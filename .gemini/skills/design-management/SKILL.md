@@ -1,6 +1,6 @@
 ---
 name: design-management
-description: Use this skill when managing, creating, or modifying architectural design documents within this repository. It must be used when creating features, designing 
+description: Use this skill when managing, creating, or modifying architectural design documents within this repository. It must be used when creating features, designing
 APIs, fixing bugs, or improving documentation. It enforces the standards for design proposals.
 ---
 

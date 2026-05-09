@@ -61,6 +61,27 @@ container-version-snapshot --host user@host1 --sudo-host user@host2
 }
 ```
 
+## Getting Started / Contributing
+
+This repository uses [Task](https://taskfile.dev/) to orchestrate build operations and [pre-commit](https://pre-commit.com/) to enforce code health (linting and formatting) across all languages.
+
+To set up your local development environment:
+
+1. Clone the repository.
+2. Run the bootstrap command:
+   ```shell
+   task setup
+   ```
+   _What this does: It installs `pre-commit` and configures the git hooks. Every time you try to `git commit`, it will automatically run tools like `golangci-lint` (for Go) and `ruff` (for Python) to format and lint your code._
+
+You can also run these checks manually at any time without committing:
+
+```shell
+task lint
+```
+
+Our GitHub Actions CI pipeline will automatically run these same checks on all pull requests to ensure nothing slips through.
+
 ## Development
 
 We use [Task](https://taskfile.dev/) as our build tool. Use `task` at the root to manage operations across all languages:

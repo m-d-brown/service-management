@@ -1,0 +1,83 @@
+# ==============================================================================
+# CONTINUOUS INTEGRATION (CI) WORKFLOW
+# ==============================================================================
+# This workflow acts as the final gatekeeper for our repository health.
+# It runs automatically on every pull request to 'main' and any direct pushes
+# to 'main'.
+#
+# If a step fails here, it usually means someone bypassed the local `task setup`
+# or committed using `git commit --no-verify`.
+
+name: CI
+
+on:
+  # Run when code is merged or pushed directly to the main branch
+  push:
+    branches: [main]
+  # Run when a Pull Request targets the main branch
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # JOB 1: LINTING & FORMATTING
+  # ----------------------------------------------------------------------------
+  # This job replicates the local `pre-commit` environment. If a file violates
+  # our formatting or linting rules, this job will fail the CI pipeline.
+  lint-and-format:
+    name: Lint & Format (Pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pre-commit hooks require Go to be installed (for golangci-lint)
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          # Caching dependencies speeds up the CI run
+          cache-dependency-path: go/go.sum
+
+      # Pre-commit itself and Ruff/Mypy require Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # We use Task to orchestrate commands, though in this job we run
+      # pre-commit directly to keep it simple.
+      - name: Install Task
+        uses: arduino/setup-task@v2
+
+      # Pre-commit must be installed in the CI environment via pip
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      # We run pre-commit across EVERY file in the repository (not just changed
+      # files) to guarantee the entire codebase is healthy.
+      - name: Run pre-commit
+        run: pre-commit run --all-files
+
+  # ----------------------------------------------------------------------------
+  # JOB 2: GO TESTS
+  # ----------------------------------------------------------------------------
+  # This job executes the automated unit tests for our Go tools.
+  test-go:
+    name: Go Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: go/go.sum
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+
+      # We delegate to our Taskfile to run the tests, ensuring the CI runs
+      # the exact same command that developers use locally.
+      - name: Run Go Tests
+        run: task go:test
