@@ -1,4 +1,4 @@
-module container-version-snapshot
+module service-management
 
 go 1.24.4
 

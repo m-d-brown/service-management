@@ -1,26 +1,78 @@
-# container-version-snapshot
+# service-management
 
-A Go tool to snapshot container versions across multiple hosts via SSH.
+A collection of tools and libraries for managing infrastructure services. This
+repo is particularly relevant for 'homelab' environments that use Podman, Docker,
+Ansible and Terraform.
 
-## Features
+## Tools
+
+### `container-version-snapshot`
+
+A tool to snapshot container versions across multiple hosts via SSH.
+
+**Features:**
 
 - Scans multiple hosts via SSH.
 - Detects running containers using `podman`.
 - Resolves versions from OCI labels or registry lookup.
 - Outputs a structured JSON snapshot.
 
+**Installation:**
 
-
-## Usage
+Use the project's task runner to install the tool to your `$GOBIN`:
 
 ```shell
-./bin/container-version-snapshot --host user@host1 --sudo-host user@host2
+task go:install
+```
+
+**Usage:**
+
+```shell
+container-version-snapshot --host user@host1 --sudo-host user@host2
+```
+
+**Example Output:**
+
+```json
+{
+  "timestamp": "2026-05-09T00:00:00Z",
+  "targets": [
+    {
+      "host": "host1",
+      "user": "user",
+      "sudo": false
+    }
+  ],
+  "containers": [
+    {
+      "host": "host1",
+      "container": "nginx-proxy",
+      "image_label": "docker.io/library/nginx:latest",
+      "on_host_versioning": {
+        "oci": "1.25.3",
+        "raw": "sha256:abcd...",
+        "other_repo_tags": ["nginx:1.25.3"]
+      },
+      "remote_registry_info": {
+        "version": "1.25.4"
+      }
+    }
+  ]
+}
 ```
 
 ## Development
 
-Use `task` to manage common development operations:
+We use [Task](https://taskfile.dev/) as our build tool. Use `task` at the root to manage operations across all languages:
 
-- `task build`: Build the binary.
-- `task test`: Run tests.
-- `task tidy`: Tidy go modules.
+- `task build`: Build all binaries.
+- `task test`: Run all tests.
+- `task tidy`: Tidy all module dependencies.
+
+## Repository Structure
+
+- `go/`: Go-based tools and libraries.
+  - `go/cmd/container-version-snapshot`: Tool to snapshot container versions via SSH.
+- `python/`: (Planned) Python-based tools and libraries.
+- `design/`: Architectural design documents.
+- `skills/`: Repository-specific skills and guides.
