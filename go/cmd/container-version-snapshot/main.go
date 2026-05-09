@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"container-version-snapshot/pkg/snapshot"
+	"service-management/pkg/snapshot"
 
 	"github.com/kevinburke/ssh_config"
 	"github.com/sethvargo/go-retry"
@@ -387,4 +387,11 @@ func main() {
 	snap := buildSnapshot(targets, allRows)
 
 	printJSON(snap)
+
+	if len(registryClient.CallCounts) > 0 {
+		log.Printf("Registry External Call Totals:")
+		for repo, count := range registryClient.CallCounts {
+			log.Printf("  %s: %d", repo, count)
+		}
+	}
 }

@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"container-version-snapshot/pkg/snapshot"
+	"service-management/pkg/snapshot"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"

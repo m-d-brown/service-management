@@ -23,15 +23,30 @@ type RegistryClient interface {
 }
 
 // RealRegistryClient is the actual implementation using go-containerregistry.
-type RealRegistryClient struct{}
+type RealRegistryClient struct {
+	mu         sync.Mutex
+	CallCounts map[string]int
+}
+
+func (c *RealRegistryClient) increment(repo string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.CallCounts == nil {
+		c.CallCounts = make(map[string]int)
+	}
+	c.CallCounts[repo]++
+	log.Printf("External call made to registry for repo: %s", repo)
+}
 
 // ListTags retrieves all tags for a given repository.
 func (c *RealRegistryClient) ListTags(ctx context.Context, repo name.Repository) ([]string, error) {
+	c.increment(repo.Name())
 	return remote.List(repo, remote.WithContext(ctx))
 }
 
 // GetDigest retrieves the manifest digest for a specific tag or reference.
 func (c *RealRegistryClient) GetDigest(ctx context.Context, ref name.Reference) (string, error) {
+	c.increment(ref.Context().Name())
 	desc, err := remote.Head(ref, remote.WithContext(ctx))
 	if err != nil {
 		return "", err
@@ -41,6 +56,7 @@ func (c *RealRegistryClient) GetDigest(ctx context.Context, ref name.Reference) 
 
 // GetPlatformDigest retrieves the manifest digest for a reference targeting a specific architecture and OS.
 func (c *RealRegistryClient) GetPlatformDigest(ctx context.Context, ref name.Reference, sys *v1.Platform) (string, error) {
+	c.increment(ref.Context().Name())
 	desc, err := remote.Get(ref, remote.WithContext(ctx), remote.WithPlatform(*sys))
 	if err != nil {
 		return "", err
