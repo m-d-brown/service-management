@@ -53,6 +53,13 @@ jobs:
       - name: Install pre-commit
         run: pip install pre-commit
 
+      # Our golangci-lint hook uses "language: system", meaning it expects the
+      # binary to already be on the PATH. Locally developers have it, but CI
+      # runners don't. We install the same version pinned in our pre-commit
+      # config to keep things consistent.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.59.0
+
       # We run pre-commit across EVERY file in the repository (not just changed
       # files) to guarantee the entire codebase is healthy.
       - name: Run pre-commit
