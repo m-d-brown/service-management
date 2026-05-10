@@ -1,5 +1,17 @@
 version: "3"
 
+# ----------------------------------------------------------------------------
+# INCLUDES
+# ----------------------------------------------------------------------------
+# We include the go/Taskfile.yml under the "go" namespace. This means all
+# tasks defined in go/Taskfile.yml are available here as "go:<task-name>"
+# (e.g., go:test, go:build). The 'dir' option ensures commands run from
+# the go/ subdirectory where go.mod lives.
+includes:
+  go:
+    taskfile: go/Taskfile.yml
+    dir: go
+
 tasks:
   setup:
     desc: Bootstrap the repository (install git hooks and pre-commit)
@@ -26,23 +38,3 @@ tasks:
     aliases: [check]
     cmds:
       - pre-commit run --all-files
-
-  go:build:
-    dir: go
-    cmds:
-      - task: build
-
-  go:test:
-    dir: go
-    cmds:
-      - task: test
-
-  go:tidy:
-    dir: go
-    cmds:
-      - task: tidy
-
-  go:install:
-    dir: go
-    cmds:
-      - task: install
