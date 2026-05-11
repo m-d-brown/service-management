@@ -7,6 +7,11 @@
 #
 # If a step fails here, it usually means someone bypassed the local `task setup`
 # or committed using `git commit --no-verify`.
+#
+# VERSION MANAGEMENT:
+#   - Go version: sourced from go/go.mod (single source of truth)
+#   - Python version: sourced from .python-version (single source of truth)
+#   - GitHub Action versions: kept current by Dependabot (see .github/dependabot.yml)
 
 name: CI
 
@@ -24,28 +29,33 @@ jobs:
   # ----------------------------------------------------------------------------
   # This job replicates the local `pre-commit` environment. If a file violates
   # our formatting or linting rules, this job will fail the CI pipeline.
+  #
+  # We use `task lint` to mirror the exact developer experience locally.
   lint-and-format:
     name: Lint & Format (Pre-commit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Pre-commit hooks require Go to be installed (for golangci-lint)
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: "1.24"
-          # Caching dependencies speeds up the CI run
+          # Read the Go version from go.mod so we never drift between
+          # local development and CI.
+          go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
       # Pre-commit itself and Ruff/Mypy require Python
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          # Read the Python version from .python-version so it stays in
+          # sync with pyenv and local tooling automatically.
+          python-version-file: .python-version
 
-      # We use Task to orchestrate commands, though in this job we run
-      # pre-commit directly to keep it simple.
+      # Task is our universal command runner. We use it in CI to ensure
+      # the exact same commands run here as on a developer's machine.
       - name: Install Task
         uses: arduino/setup-task@v2
 
@@ -64,10 +74,10 @@ jobs:
         with:
           install-only: true
 
-      # We run pre-commit across EVERY file in the repository (not just changed
-      # files) to guarantee the entire codebase is healthy.
-      - name: Run pre-commit
-        run: pre-commit run --all-files
+      # Mirror the local developer workflow: `task lint` runs
+      # `pre-commit run --all-files` under the hood.
+      - name: Run Linting
+        run: task lint
 
   # ----------------------------------------------------------------------------
   # JOB 2: GO TESTS
@@ -77,12 +87,12 @@ jobs:
     name: Go Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: "1.24"
+          go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
       - name: Install Task

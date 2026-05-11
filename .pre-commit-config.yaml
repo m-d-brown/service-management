@@ -36,16 +36,13 @@ repos:
     rev: v1.59.0
     hooks:
       - id: golangci-lint
-        # We give the linter a generous timeout to prevent it from failing
-        # prematurely on slower machines during the first cached run.
-        args: ["--timeout", "5m"]
-        # Because our Go code lives in a subdirectory (go/), we must tell
-        # the hook to enter that directory before running.
+        # Because our Go code lives in a subdirectory (go/), we override the
+        # entry to cd into it before running.
         entry: bash -c 'cd go && golangci-lint run ./...'
         language: system
         types: [go]
-        # We pass false because golangci-lint is designed to run on the entire
-        # module at once, rather than specific files passed by pre-commit.
+        # golangci-lint is designed to run on the entire module at once,
+        # rather than on individual files passed by pre-commit.
         pass_filenames: false
 
   # ----------------------------------------------------------------------------
