@@ -46,6 +46,13 @@ jobs:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
+      # actions/setup-go sets GOTOOLCHAIN=local, which prevents pre-commit
+      # hooks that use `language: golang` (e.g., gitleaks) from auto-downloading
+      # a newer Go toolchain when their own go.mod requires one. Unsetting it
+      # restores Go's default behavior.
+      - name: Allow Go toolchain auto-download
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
       # Pre-commit itself and Ruff/Mypy require Python
       - name: Set up Python
         uses: actions/setup-python@v6
