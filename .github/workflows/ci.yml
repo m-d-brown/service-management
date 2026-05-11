@@ -30,9 +30,9 @@ jobs:
   # This job replicates the local `pre-commit` environment. If a file violates
   # our formatting or linting rules, this job will fail the CI pipeline.
   #
-  # We use `task lint` to mirror the exact developer experience locally.
-  lint-and-format:
-    name: Lint & Format (Pre-commit)
+  # We use `task check` to mirror the exact developer experience locally.
+  check:
+    name: Check (Format, Lint, Scan)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -74,10 +74,10 @@ jobs:
         with:
           install-only: true
 
-      # Mirror the local developer workflow: `task lint` runs
+      # Mirror the local developer workflow: `task check` runs
       # `pre-commit run --all-files` under the hood.
-      - name: Run Linting
-        run: task lint
+      - name: Run Checks
+        run: task check
 
   # ----------------------------------------------------------------------------
   # JOB 2: GO TESTS
@@ -97,6 +97,11 @@ jobs:
 
       - name: Install Task
         uses: arduino/setup-task@v2
+
+      # Verify that go.mod and go.sum are tidy. If a developer added a
+      # dependency but forgot to run `task tidy`, this will catch it.
+      - name: Verify go.mod is tidy
+        run: task go:tidy:check
 
       # We delegate to our Taskfile to run the tests, ensuring the CI runs
       # the exact same command that developers use locally.

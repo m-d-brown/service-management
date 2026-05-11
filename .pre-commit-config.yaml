@@ -5,7 +5,7 @@
 # is finalized. By catching issues early, we keep our CI pipeline fast and green.
 #
 # To manually run these checks on all files, use:
-#   task lint
+#   task check
 #
 # To bypass these checks during an emergency commit, use:
 #   git commit --no-verify

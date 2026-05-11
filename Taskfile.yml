@@ -33,8 +33,9 @@ tasks:
     cmds:
       - task: go:tidy
 
-  lint:
-    desc: Run pre-commit checks on all files
-    aliases: [check]
+  check:
+    desc: Format, lint, type-check, and scan all files
+    aliases: [lint, fmt]
     cmds:
       - pre-commit run --all-files
+      - task: go:tidy:check
