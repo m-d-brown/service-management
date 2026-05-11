@@ -21,6 +21,12 @@ tasks:
     cmds:
       - go mod tidy
 
+  tidy:check:
+    desc: Verify go.mod and go.sum are tidy (fails if they would change)
+    cmds:
+      - go mod tidy
+      - git diff --exit-code go.mod go.sum
+
   install:
     desc: Install the binary to GOBIN
     cmds:

@@ -6,14 +6,14 @@ As this repository grows into a polyglot monorepo hosting tools in multiple lang
 
 This document describes the principles and concrete mechanisms that govern CI automation in this repository, with three overarching concerns:
 
-- **Parity**: CI must execute the exact same commands a developer runs locally. If `task lint` passes on a developer's machine, it must pass in CI — and vice versa. Any divergence erodes trust in the pipeline.
+- **Parity**: CI must execute the exact same commands a developer runs locally. If `task check` passes on a developer's machine, it must pass in CI — and vice versa. Any divergence erodes trust in the pipeline.
 - **Single source of truth**: Tool versions (Go, Python, linters) should be defined in exactly one place and consumed everywhere else. Duplicating a version string across `go.mod`, `ci.yml`, and local scripts is a guaranteed source of drift.
 - **Self-maintaining infrastructure**: Dependency versions across the CI pipeline — GitHub Actions, Go modules, pre-commit hooks — should be kept current through automation, not manual intervention. The pipeline should surface staleness as PRs, not as surprise breakages.
 
 ## Goals
 
 - **Fix CI**: Eliminate all failures in both the Lint and Go Tests jobs.
-- **Mirror local workflow**: CI should run the exact same commands a developer runs locally (`task lint`, `task go:test`), reducing "works on my machine" discrepancies.
+- **Mirror local workflow**: CI should run the exact same commands a developer runs locally (`task check`, `task go:test`), reducing "works on my machine" discrepancies.
 - **Single source of truth for versions**: Each tool version should be defined in exactly one place, with CI reading from that source — never duplicating it.
 - **Automated maintenance**: Dependency versions (actions, Go modules) should be kept current via automated PRs, not manual intervention.
 
@@ -89,10 +89,10 @@ Dependabot does not natively support pre-commit hook versions. Those must be upd
 
 CI mirrors the local developer experience by running commands through Task:
 
-| CI Step       | Command        | Equivalent Local Command |
-| ------------- | -------------- | ------------------------ |
-| Lint & Format | `task lint`    | `task lint`              |
-| Go Tests      | `task go:test` | `task go:test`           |
+| CI Step  | Command        | Equivalent Local Command |
+| -------- | -------------- | ------------------------ |
+| Check    | `task check`   | `task check`             |
+| Go Tests | `task go:test` | `task go:test`           |
 
 This ensures that if CI fails, a developer can reproduce the exact failure locally by running the same `task` command.
 
@@ -127,7 +127,7 @@ graph TD
     B3 --> B4["Install Task"]
     B4 --> B5["Install pre-commit"]
     B5 --> B6["golangci-lint-action (install-only)"]
-    B6 --> B7["task lint"]
+    B6 --> B7["task check"]
 
     C --> C1["checkout"]
     C1 --> C2["setup-go (version from go.mod)"]

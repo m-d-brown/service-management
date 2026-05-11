@@ -77,7 +77,7 @@ To set up your local development environment:
 You can also run these checks manually at any time without committing:
 
 ```shell
-task lint
+task check
 ```
 
 Our GitHub Actions CI pipeline will automatically run these same checks on all pull requests to ensure nothing slips through.
@@ -86,6 +86,7 @@ Our GitHub Actions CI pipeline will automatically run these same checks on all p
 
 We use [Task](https://taskfile.dev/) as our build tool. Use `task` at the root to manage operations across all languages:
 
+- `task check`: Format, lint, type-check, and scan all files.
 - `task build`: Build all binaries.
 - `task test`: Run all tests.
 - `task tidy`: Tidy all module dependencies.
