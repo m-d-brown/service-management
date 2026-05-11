@@ -1,0 +1,46 @@
+# ==============================================================================
+# DEPENDABOT CONFIGURATION
+# ==============================================================================
+# Dependabot automatically opens pull requests to keep our dependencies current.
+# This eliminates hardcoded version drift across:
+#
+#   1. GitHub Actions (e.g., actions/checkout, golangci-lint-action)
+#   2. Go modules (go.mod dependencies)
+#
+# PRs are grouped by ecosystem so related bumps land in a single PR rather
+# than flooding the repo with one PR per dependency.
+#
+# For pre-commit hooks, run `pre-commit autoupdate` locally or add a
+# scheduled CI job — Dependabot does not natively support pre-commit.
+# ==============================================================================
+
+version: 2
+
+updates:
+  # --- GitHub Actions ---
+  # Keeps all workflow action versions (actions/checkout, setup-go, etc.)
+  # up to date. Dependabot will open PRs when new major/minor versions
+  # are released, preventing node.js deprecation warnings and picking up
+  # security fixes.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Group all action bumps into a single PR for cleaner history
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # --- Go Modules ---
+  # Monitors go/go.mod for outdated direct dependencies and opens PRs
+  # to bump them. This keeps libraries like go-retry, go-containerregistry,
+  # and crypto current with security patches.
+  - package-ecosystem: gomod
+    directory: /go
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
