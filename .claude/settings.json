@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(task check:*)",
+      "Bash(task lint:*)",
+      "Bash(task fmt:*)",
+      "Bash(task test:*)",
+      "Bash(task go:test:*)",
+      "Bash(task python:test:*)",
+      "Bash(task go:lint:*)",
+      "Bash(task python:lint:*)",
+      "Bash(task python:type-check:*)",
+      "Bash(task go:tidy:check:*)",
+      "Bash(task build:*)",
+      "Bash(task go:build:*)",
+      "Bash(task tidy:*)",
+      "Bash(task go:tidy:*)",
+      "Bash(task python:format:*)",
+      "Bash(task go:install:*)"
+    ]
+  }
+}
