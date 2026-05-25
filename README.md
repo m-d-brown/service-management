@@ -61,6 +61,52 @@ container-version-snapshot --host user@host1 --sudo-host user@host2
 }
 ```
 
+### `reboot-orchestrator`
+
+A lightweight, modular, and dependency-aware Python library and CLI tool designed to orchestrate system reboots across network infrastructure.
+
+**Features:**
+
+- **Topological Sequence (DAG)**: Dynamically groups hosts into execution tiers based on topological dependency sorting (Kahn's Algorithm).
+- **Direct SSH Execution**: Triggers all reboots gracefully via parallel SSH commands, avoiding heavy external automation runners or playbooks.
+- **ACPI "Zombie" VM Workaround**: Safely handles virtual machines suffering from poweroff bugs by executing pre-flight graceful halts and issuing fallback cut-power commands on the hypervisor host via SSH if they do not halt in time.
+- **Asynchronous Reboots & Ping Tracking**: Dispatches reboot triggers asynchronously so that network/connectivity drops do not hang the orchestrator, and asynchronously tracks host status using continuous ICMP ping loops to guarantee a tier is fully online before moving to the next.
+
+**Usage:**
+
+Run the tool using `uv` from the repository root:
+
+```shell
+uv run --project python/reboot-orchestrator reboot-orchestrator [options] host1 host2 [host3 ...]
+```
+
+For detailed usage, configuration, and API specifications, consult the [python/reboot-orchestrator README](python/reboot-orchestrator/README.md).
+
+**Example Output:**
+
+```
+The following hosts will be rebooted (parents first, nested dependents last):
+└── hypervisor-1
+    └── vm-a
+
+=== Executing Tier: 1 ===
+Issuing reboot command to: hypervisor-1
+Waiting 15 seconds for hosts to drop off the network...
+Waiting for hypervisor-1, vm-a to return online...
+[✓] hypervisor-1 is back online!
+[✓] vm-a is back online!
+
+=== Executing Tier: 2 ===
+Executing pre-flight graceful halt for 'vm-a' via SSH...
+Waiting 15s for 'vm-a' to power down...
+Issuing reboot command to: vm-a
+Waiting 15 seconds for hosts to drop off the network...
+Waiting for vm-a to return online...
+[✓] vm-a is back online!
+
+All tiers complete. Reboot orchestration finished successfully.
+```
+
 ## Getting Started / Contributing
 
 This repository uses [Task](https://taskfile.dev/) to orchestrate build operations and [pre-commit](https://pre-commit.com/) to enforce code health (linting and formatting) across all languages.
