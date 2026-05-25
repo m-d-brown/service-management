@@ -123,6 +123,60 @@ class RebootOrchestrator:
                     "Cannot monitor via ping."
                 )
 
+    def print_dependency_tree(
+        self, target_hosts: set[str], inventory: dict[str, dict[str, Any]]
+    ) -> None:
+        """
+        Prints a beautiful, hierarchical tree representation of the targeted hosts
+        showing their topological reboot order and dependencies.
+
+        Args:
+            target_hosts: The set of hostnames targeted for reboot execution.
+            inventory: The flattened inventory mapping of hostnames to properties.
+        """
+        # Build a mapping of parent -> set of child targeted dependents
+        dependents: dict[str, list[str]] = {}
+        for h in target_hosts:
+            for dep in inventory.get(h, {}).get("depends_on") or []:
+                if dep in target_hosts:
+                    dependents.setdefault(dep, []).append(h)
+
+        # Roots are targeted hosts that do not depend on any other targeted host in the queue
+        roots = [
+            h
+            for h in target_hosts
+            if not any(
+                dep in target_hosts
+                for dep in inventory.get(h, {}).get("depends_on") or []
+            )
+        ]
+        roots.sort()
+
+        visited: set[str] = set()
+
+        def _print_node(node: str, prefix: str = "", is_last: bool = True) -> None:
+            connector = "└── " if is_last else "├── "
+            if node in visited:
+                print(f"{prefix}{connector}{node} (already listed)")
+                return
+            print(f"{prefix}{connector}{node}")
+            visited.add(node)
+
+            children = sorted(dependents.get(node, []))
+            if not children:
+                return
+
+            new_prefix = prefix + ("    " if is_last else "│   ")
+            for i, child in enumerate(children):
+                _print_node(
+                    child,
+                    prefix=new_prefix,
+                    is_last=(i == len(children) - 1),
+                )
+
+        for i, root in enumerate(roots):
+            _print_node(root, is_last=(i == len(roots) - 1))
+
     def run(self, target_hosts: set[str]) -> None:
         """
         Executes the full tiered reboot orchestration workflow.
@@ -143,9 +197,10 @@ class RebootOrchestrator:
         inventory = self.get_inventory()
         self.validate_targets(inventory, target_hosts)
 
-        print("\nThe following hosts will be rebooted:")
-        for h in sorted(target_hosts):
-            print(f" - {h}")
+        print(
+            "\nThe following hosts will be rebooted (parents first, nested dependents last):"
+        )
+        self.print_dependency_tree(target_hosts, inventory)
 
         active_queue = set(target_hosts)
         tier_map = self.build_execution_tiers(active_queue, inventory)

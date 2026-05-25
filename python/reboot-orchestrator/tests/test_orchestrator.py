@@ -155,3 +155,30 @@ def test_orchestrator_run_flow(
 
     # Check 4: Wait reachability checks called
     assert mock_wait.call_count == 2
+
+
+def test_print_dependency_tree(capsys: pytest.CaptureFixture[str]) -> None:
+    """
+    Verifies that print_dependency_tree produces the expected structured tree output.
+    """
+    inventory = {
+        "hypervisor-1": {},
+        "vm-a": {"depends_on": ["hypervisor-1"]},
+        "vm-b": {"depends_on": ["hypervisor-1"]},
+        "app-1": {"depends_on": ["vm-a", "vm-b"]},
+    }
+    config = OrchestrationConfig()
+    orchestrator = RebootOrchestrator(config)
+
+    orchestrator.print_dependency_tree(
+        {"hypervisor-1", "vm-a", "vm-b", "app-1"}, inventory
+    )
+
+    captured = capsys.readouterr()
+    output = captured.out
+
+    assert "└── hypervisor-1" in output
+    assert "    ├── vm-a" in output
+    assert "    │   └── app-1" in output
+    assert "    └── vm-b" in output
+    assert "        └── app-1 (already listed)" in output

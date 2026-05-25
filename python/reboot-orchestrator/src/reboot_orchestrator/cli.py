@@ -79,9 +79,10 @@ def main() -> None:
         print(f"FATAL: Pre-flight validation failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    print("\nThe following hosts will be rebooted:")
-    for h in sorted(target_hosts):
-        print(f" - {h}")
+    print(
+        "\nThe following hosts will be rebooted (parents first, nested dependents last):"
+    )
+    orchestrator.print_dependency_tree(target_hosts, inventory)
 
     if not args.yes:
         try:
