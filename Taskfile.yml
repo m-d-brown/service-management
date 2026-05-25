@@ -11,6 +11,9 @@ includes:
   go:
     taskfile: go/Taskfile.yml
     dir: go
+  python:
+    taskfile: python/reboot-orchestrator/Taskfile.yml
+    dir: python/reboot-orchestrator
 
 tasks:
   setup:
@@ -27,6 +30,7 @@ tasks:
     desc: Run all tests
     cmds:
       - task: go:test
+      - task: python:test
 
   tidy:
     desc: Tidy all modules
@@ -39,3 +43,4 @@ tasks:
     cmds:
       - pre-commit run --all-files
       - task: go:tidy:check
+      - task: python:check

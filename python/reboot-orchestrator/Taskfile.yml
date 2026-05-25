@@ -1,0 +1,30 @@
+version: "3"
+
+tasks:
+  test:
+    desc: Run unit tests with pytest
+    cmds:
+      - uv run pytest tests/
+
+  lint:
+    desc: Run Ruff linter and formatter checks
+    cmds:
+      - uv run ruff check src/ tests/
+      - uv run ruff format --check src/ tests/
+
+  format:
+    desc: Run Ruff checks with auto-fix and format files
+    cmds:
+      - uv run ruff check --fix src/ tests/
+      - uv run ruff format src/ tests/
+
+  type-check:
+    desc: Run mypy static type checking
+    cmds:
+      - uv run mypy --ignore-missing-imports src/ tests/
+
+  check:
+    desc: Run all quality checks (lint, format checks, type-checking)
+    cmds:
+      - task: lint
+      - task: type-check
