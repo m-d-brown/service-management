@@ -61,6 +61,11 @@ jobs:
           # sync with pyenv and local tooling automatically.
           python-version-file: .python-version
 
+      # uv drives the Python tooling (ruff, mypy, pytest) via `uv run`, which
+      # the `python:check` tasks invoke.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
       # Task is our universal command runner. We use it in CI to ensure
       # the exact same commands run here as on a developer's machine.
       - name: Install Task
