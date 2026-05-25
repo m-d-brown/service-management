@@ -1,0 +1,23 @@
+# ==============================================================================
+# MISE TOOL CONFIGURATION
+# ==============================================================================
+# mise (https://mise.jdx.dev) is the single source of truth for the auxiliary
+# CLI tools this repo depends on. Both local development and CI install from
+# this file (CI via jdx/mise-action), so the two environments cannot drift —
+# the class of bug where a tool works locally but is missing in CI.
+#
+# Go and Python are intentionally NOT pinned here: their versions are already
+# sourced canonically from go/go.mod and .python-version respectively (read by
+# actions/setup-go and actions/setup-python in CI, and by the go toolchain /
+# pyenv locally). Duplicating them here would reintroduce drift.
+#
+# Run `mise install` to provision these tools locally.
+
+[tools]
+# uv drives the Python tooling (ruff, mypy, pytest) via `uv run`.
+uv = "latest"
+# task is our universal command runner (Taskfile.yml).
+task = "latest"
+# golangci-lint is invoked by the pre-commit golangci-lint hook
+# (language: system), so it must be on PATH.
+golangci-lint = "latest"

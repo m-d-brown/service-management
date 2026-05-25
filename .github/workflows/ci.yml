@@ -11,6 +11,8 @@
 # VERSION MANAGEMENT:
 #   - Go version: sourced from go/go.mod (single source of truth)
 #   - Python version: sourced from .python-version (single source of truth)
+#   - CLI tools (uv, task, golangci-lint): sourced from mise.toml (single
+#     source of truth, shared with local development via mise)
 #   - GitHub Action versions: kept current by Dependabot (see .github/dependabot.yml)
 
 name: CI
@@ -61,30 +63,17 @@ jobs:
           # sync with pyenv and local tooling automatically.
           python-version-file: .python-version
 
-      # uv drives the Python tooling (ruff, mypy, pytest) via `uv run`, which
-      # the `python:check` tasks invoke.
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
-      # Task is our universal command runner. We use it in CI to ensure
-      # the exact same commands run here as on a developer's machine.
-      - name: Install Task
-        uses: arduino/setup-task@v2
+      # Install the auxiliary CLI tools (uv, task, golangci-lint) from
+      # mise.toml. This is the same file developers use locally, so CI and
+      # local environments install identical tools and cannot drift. uv drives
+      # the Python tooling, task is our command runner, and golangci-lint is
+      # required on PATH by the pre-commit hook (language: system).
+      - name: Install tools via mise
+        uses: jdx/mise-action@v2
 
       # Pre-commit must be installed in the CI environment via pip
       - name: Install pre-commit
         run: pip install pre-commit
-
-      # Our golangci-lint hook uses "language: system", meaning it expects the
-      # binary to already be on the PATH. The official golangci-lint docs
-      # (https://golangci-lint.run/docs/welcome/install/ci/#github-actions)
-      # recommend their GitHub Action for CI. We use 'install-only: true' to
-      # place the binary on PATH without running it — pre-commit drives the
-      # actual lint run.
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          install-only: true
 
       # Mirror the local developer workflow: `task check` runs
       # `pre-commit run --all-files` under the hood.
@@ -107,8 +96,10 @@ jobs:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
-      - name: Install Task
-        uses: arduino/setup-task@v2
+      # Install task (and the rest of mise.toml) so CI uses the same runner
+      # as local development.
+      - name: Install tools via mise
+        uses: jdx/mise-action@v2
 
       # Verify that go.mod and go.sum are tidy. If a developer added a
       # dependency but forgot to run `task tidy`, this will catch it.

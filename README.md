@@ -118,14 +118,25 @@ All tiers complete. Reboot orchestration finished successfully.
 
 ## Getting Started / Contributing
 
-This repository uses [Task](https://taskfile.dev/) to orchestrate build
-operations and [pre-commit](https://pre-commit.com/) to enforce code health
-(linting and formatting) across all languages.
+This repository uses [mise](https://mise.jdx.dev/) to provision its CLI tools,
+[Task](https://taskfile.dev/) to orchestrate build operations, and
+[pre-commit](https://pre-commit.com/) to enforce code health (linting and
+formatting) across all languages.
 
 To set up your local development environment:
 
 1. Clone the repository.
-2. Run the bootstrap command:
+2. [Install mise](https://mise.jdx.dev/getting-started.html), then provision the
+   project's tools (`task`, `uv`, `golangci-lint`):
+
+   ```shell
+   mise install
+   ```
+
+   _What this does: It reads `mise.toml` and installs the exact tools CI uses,
+   so your environment cannot drift from the pipeline._
+
+3. Run the bootstrap command:
 
    ```shell
    task setup
