@@ -4,7 +4,8 @@ tasks:
   build:
     desc: Build the binary
     cmds:
-      - go build -o bin/container-version-snapshot ./cmd/container-version-snapshot
+      - go build -o bin/container-version-snapshot
+        ./cmd/container-version-snapshot
 
   test:
     desc: Run tests

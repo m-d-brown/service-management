@@ -1,8 +1,8 @@
 # service-management
 
 A collection of tools and libraries for managing infrastructure services. This
-repo is particularly relevant for 'homelab' environments that use Podman, Docker,
-Ansible and Terraform.
+repo is particularly relevant for 'homelab' environments that use Podman,
+Docker, Ansible and Terraform.
 
 ## Tools
 
@@ -63,14 +63,22 @@ container-version-snapshot --host user@host1 --sudo-host user@host2
 
 ### `reboot-orchestrator`
 
-A lightweight, modular, and dependency-aware Python library and CLI tool designed to orchestrate system reboots across network infrastructure.
+A lightweight, modular, and dependency-aware Python library and CLI tool
+designed to orchestrate system reboots across network infrastructure.
 
 **Features:**
 
-- **Topological Sequence (DAG)**: Dynamically groups hosts into execution tiers based on topological dependency sorting (Kahn's Algorithm).
-- **Direct SSH Execution**: Triggers all reboots gracefully via parallel SSH commands, avoiding heavy external automation runners or playbooks.
-- **ACPI "Zombie" VM Workaround**: Safely handles virtual machines suffering from poweroff bugs by executing pre-flight graceful halts and issuing fallback cut-power commands on the hypervisor host via SSH if they do not halt in time.
-- **Asynchronous Reboots & Ping Tracking**: Dispatches reboot triggers asynchronously so that network/connectivity drops do not hang the orchestrator, and asynchronously tracks host status using continuous ICMP ping loops to guarantee a tier is fully online before moving to the next.
+- **Topological Sequence (DAG)**: Dynamically groups hosts into execution tiers
+  based on topological dependency sorting (Kahn's Algorithm).
+- **Direct SSH Execution**: Triggers all reboots gracefully via parallel SSH
+  commands, avoiding heavy external automation runners or playbooks.
+- **ACPI "Zombie" VM Workaround**: Safely handles virtual machines suffering
+  from poweroff bugs by executing pre-flight graceful halts and issuing fallback
+  cut-power commands on the hypervisor host via SSH if they do not halt in time.
+- **Asynchronous Reboots & Ping Tracking**: Dispatches reboot triggers
+  asynchronously so that network/connectivity drops do not hang the
+  orchestrator, and asynchronously tracks host status using continuous ICMP ping
+  loops to guarantee a tier is fully online before moving to the next.
 
 **Usage:**
 
@@ -80,11 +88,12 @@ Run the tool using `uv` from the repository root:
 uv run --project python/reboot-orchestrator reboot-orchestrator [options] host1 host2 [host3 ...]
 ```
 
-For detailed usage, configuration, and API specifications, consult the [python/reboot-orchestrator README](python/reboot-orchestrator/README.md).
+For detailed usage, configuration, and API specifications, consult the
+[python/reboot-orchestrator README](python/reboot-orchestrator/README.md).
 
 **Example Output:**
 
-```
+```text
 The following hosts will be rebooted (parents first, nested dependents last):
 └── hypervisor-1
     └── vm-a
@@ -109,16 +118,23 @@ All tiers complete. Reboot orchestration finished successfully.
 
 ## Getting Started / Contributing
 
-This repository uses [Task](https://taskfile.dev/) to orchestrate build operations and [pre-commit](https://pre-commit.com/) to enforce code health (linting and formatting) across all languages.
+This repository uses [Task](https://taskfile.dev/) to orchestrate build
+operations and [pre-commit](https://pre-commit.com/) to enforce code health
+(linting and formatting) across all languages.
 
 To set up your local development environment:
 
 1. Clone the repository.
 2. Run the bootstrap command:
+
    ```shell
    task setup
    ```
-   _What this does: It installs `pre-commit` and configures the git hooks. Every time you try to `git commit`, it will automatically run tools like `golangci-lint` (for Go) and `ruff` (for Python) to format and lint your code._
+
+   _What this does: It installs `pre-commit` and configures the git hooks. Every
+   time you try to `git commit`, it will automatically run tools like
+   `golangci-lint` (for Go) and `ruff` (for Python) to format and lint your
+   code._
 
 You can also run these checks manually at any time without committing:
 
@@ -126,11 +142,13 @@ You can also run these checks manually at any time without committing:
 task check
 ```
 
-Our GitHub Actions CI pipeline will automatically run these same checks on all pull requests to ensure nothing slips through.
+Our GitHub Actions CI pipeline will automatically run these same checks on all
+pull requests to ensure nothing slips through.
 
 ## Development
 
-We use [Task](https://taskfile.dev/) as our build tool. Use `task` at the root to manage operations across all languages:
+We use [Task](https://taskfile.dev/) as our build tool. Use `task` at the root
+to manage operations across all languages:
 
 - `task check`: Format, lint, type-check, and scan all files.
 - `task build`: Build all binaries.
@@ -140,7 +158,8 @@ We use [Task](https://taskfile.dev/) as our build tool. Use `task` at the root t
 ## Repository Structure
 
 - `go/`: Go-based tools and libraries.
-  - `go/cmd/container-version-snapshot`: Tool to snapshot container versions via SSH.
+  - `go/cmd/container-version-snapshot`: Tool to snapshot container versions via
+    SSH.
 - `python/`: (Planned) Python-based tools and libraries.
 - `design/`: Architectural design documents.
 - `skills/`: Repository-specific skills and guides.
