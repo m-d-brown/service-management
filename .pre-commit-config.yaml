@@ -74,6 +74,15 @@ repos:
         additional_dependencies: [types-PyYAML]
 
   # ----------------------------------------------------------------------------
+  # MARKDOWN LINTING
+  # ----------------------------------------------------------------------------
+  # markdownlint checks markdown files for style, structure, and syntax issues.
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.41.0
+    hooks:
+      - id: markdownlint
+
+  # ----------------------------------------------------------------------------
   # MARKDOWN & CONFIG FORMATTING
   # ----------------------------------------------------------------------------
   # Prettier is an opinionated code formatter that keeps our Markdown and YAML
@@ -84,6 +93,10 @@ repos:
       - id: prettier
         # We only want prettier to format markdown and yaml.
         types_or: [markdown, yaml]
+        # --prose-wrap=always forces Prettier to automatically wrap markdown paragraphs
+        # (prose) at 80 characters, keeping files clean and readable. We disable MD013
+        # in .markdownlint.yaml to prevent conflicts on long URLs, code blocks, or tables.
+        args: ["--prose-wrap=always"]
 
   # ----------------------------------------------------------------------------
   # SECRET SCANNING

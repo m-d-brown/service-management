@@ -1,0 +1,15 @@
+# ==============================================================================
+# MARKDOWN LINTING RULES CONFIGURATION
+# ==============================================================================
+# This configuration defines rules for markdownlint-cli.
+# We enable all standard rules but disable MD013 (line length) because prose-wrapping
+# is already handled automatically by Prettier (--prose-wrap=always).
+# Disabling MD013 here prevents false-positive lint failures on elements that
+# Prettier intentionally leaves unwrapped (such as long URLs, code blocks, and tables).
+# ==============================================================================
+
+# Enable all standard rules by default
+default: true
+
+# Line length (MD013) - Checked by Prettier, ignore here to allow long URLs/code
+MD013: false

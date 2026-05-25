@@ -1,28 +1,41 @@
 # Reboot Orchestrator
 
-A lightweight, modular, and dependency-aware Python library and CLI tool designed to orchestrate system reboots across network infrastructure.
+A lightweight, modular, and dependency-aware Python library and CLI tool
+designed to orchestrate system reboots across network infrastructure.
 
-By utilizing a Directed Acyclic Graph (DAG) built from your inventory declarations, `reboot-orchestrator` ensures that high-priority/network-critical systems (e.g., hypervisors, core switches, DNS hosts) reboot and return online before the systems that depend on them are touched.
+By utilizing a Directed Acyclic Graph (DAG) built from your inventory
+declarations, `reboot-orchestrator` ensures that high-priority/network-critical
+systems (e.g., hypervisors, core switches, DNS hosts) reboot and return online
+before the systems that depend on them are touched.
 
 ---
 
 ## Key Features
 
-- **Topological Sequence (DAG)**: Dynamically groups hosts into execution tiers based on topological dependency sorting (Kahn's Algorithm).
-- **Direct SSH Execution**: Triggers all reboots gracefully via native parallel SSH commands, avoiding heavy external automation runners or playbooks.
-- **ACPI "Zombie" VM Workaround**: Safely handles virtual machines suffering from poweroff bugs by executing pre-flight graceful halts and issuing fallback cut-power commands on the hypervisor host via SSH if they do not halt in time.
-- **Asynchronous Reboots**: Dispatches reboot triggers asynchronously so that network/connectivity drops do not hang the orchestrator.
-- **Ping Tracking**: Asynchronously tracks host status using continuous ICMP ping loops to guarantee a tier is fully online before moving to the next.
+- **Topological Sequence (DAG)**: Dynamically groups hosts into execution tiers
+  based on topological dependency sorting (Kahn's Algorithm).
+- **Direct SSH Execution**: Triggers all reboots gracefully via native parallel
+  SSH commands, avoiding heavy external automation runners or playbooks.
+- **ACPI "Zombie" VM Workaround**: Safely handles virtual machines suffering
+  from poweroff bugs by executing pre-flight graceful halts and issuing fallback
+  cut-power commands on the hypervisor host via SSH if they do not halt in time.
+- **Asynchronous Reboots**: Dispatches reboot triggers asynchronously so that
+  network/connectivity drops do not hang the orchestrator.
+- **Ping Tracking**: Asynchronously tracks host status using continuous ICMP
+  ping loops to guarantee a tier is fully online before moving to the next.
 
 ---
 
 ## Inventory YAML Data Contract (API)
 
-The orchestrator reads your Ansible `inventory.yml` file as its source of truth. To integrate with the orchestrator, your inventory hosts must define the following variables:
+The orchestrator reads your Ansible `inventory.yml` file as its source of truth.
+To integrate with the orchestrator, your inventory hosts must define the
+following variables:
 
 ### 1. `ip_addr` or `ansible_host` (Required for targeted hosts)
 
-Used by the reachability monitor to track the host state. If neither is present, pre-flight validation will fail.
+Used by the reachability monitor to track the host state. If neither is present,
+pre-flight validation will fail.
 
 ```yaml
 hosts:
@@ -32,7 +45,8 @@ hosts:
 
 ### 2. `depends_on` (Optional List)
 
-A list of hostnames that the current host relies on. The orchestrator uses these to construct the topological execution order.
+A list of hostnames that the current host relies on. The orchestrator uses these
+to construct the topological execution order.
 
 ```yaml
 hosts:
@@ -45,7 +59,8 @@ hosts:
 
 ### 3. `proxmox_zombie_workaround` (Optional Object)
 
-Configures a fallback forced shutdown sequence for VMs that fail to completely power off via ACPI signals.
+Configures a fallback forced shutdown sequence for VMs that fail to completely
+power off via ACPI signals.
 
 ```yaml
 hosts:
@@ -60,7 +75,8 @@ hosts:
 
 ## CLI Usage
 
-The tool is packaged with an executable entrypoint `reboot-orchestrator`. You must explicitly supply the hostnames to reboot as positional arguments.
+The tool is packaged with an executable entrypoint `reboot-orchestrator`. You
+must explicitly supply the hostnames to reboot as positional arguments.
 
 ```bash
 reboot-orchestrator [options] host1 host2 [host3 ...]
@@ -80,7 +96,8 @@ reboot-orchestrator [options] host1 host2 [host3 ...]
 
 ## Programmatic Python API
 
-You can import `reboot_orchestrator` directly into any Python program for custom integration.
+You can import `reboot_orchestrator` directly into any Python program for custom
+integration.
 
 ```python
 from reboot_orchestrator import RebootOrchestrator, OrchestrationConfig
