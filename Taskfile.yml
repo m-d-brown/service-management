@@ -16,6 +16,11 @@ includes:
     dir: python/reboot-orchestrator
 
 tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
   setup:
     desc: Bootstrap the repository (install git hooks and pre-commit)
     cmds:
