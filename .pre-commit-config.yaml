@@ -71,6 +71,7 @@ repos:
         # We ignore missing imports because pre-commit runs mypy in an isolated
         # environment that doesn't have our 3rd-party dependencies installed.
         args: [--ignore-missing-imports]
+        additional_dependencies: [types-PyYAML]
 
   # ----------------------------------------------------------------------------
   # MARKDOWN & CONFIG FORMATTING
