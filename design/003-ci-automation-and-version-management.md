@@ -27,7 +27,7 @@ automation in this repository, with three overarching concerns:
 
 - **Fix CI**: Eliminate all failures in both the Lint and Go Tests jobs.
 - **Mirror local workflow**: CI should run the exact same commands a developer
-  runs locally (`task check`, `task go:test`), reducing "works on my machine"
+  runs locally (`task check`, `task test`), reducing "works on my machine"
   discrepancies.
 - **Single source of truth for versions**: Each tool version should be defined
   in exactly one place, with CI reading from that source — never duplicating it.
@@ -122,10 +122,10 @@ updated manually via `pre-commit autoupdate`.
 
 CI mirrors the local developer experience by running commands through Task:
 
-| CI Step  | Command        | Equivalent Local Command |
-| -------- | -------------- | ------------------------ |
-| Check    | `task check`   | `task check`             |
-| Go Tests | `task go:test` | `task go:test`           |
+| CI Step | Command      | Equivalent Local Command |
+| ------- | ------------ | ------------------------ |
+| Check   | `task check` | `task check`             |
+| Tests   | `task test`  | `task test`              |
 
 This ensures that if CI fails, a developer can reproduce the exact failure
 locally by running the same `task` command.
@@ -166,7 +166,7 @@ graph TD
     C --> C1["checkout"]
     C1 --> C2["setup-go (version from go.mod)"]
     C2 --> C3["Install Task"]
-    C3 --> C4["task go:test"]
+    C3 --> C4["task test"]
 ```
 
 ## Alternatives Considered
@@ -194,3 +194,42 @@ graph TD
 | `dir: go` + `task: test` (internal call) | ❌ Rejected | Creates infinite recursion (the original bug)                 |
 | `includes:` directive                    | ✅ Adopted  | Properly namespaces child Taskfile; idiomatic Task v3 pattern |
 | Shell-out: `cmd: cd go && task test`     | ❌ Rejected | Spawns a new `task` process; loses variable inheritance       |
+
+## Testing CI Locally
+
+Because CI is a thin wrapper around the project's `task` commands, there are two
+ways to reproduce the pipeline before pushing.
+
+### 1. Run the task commands directly (fast, recommended)
+
+The pipeline has two jobs, each running a single task:
+
+```shell
+task check   # mirrors the "Check" job (lint, format-check, type-check, scan)
+task test    # mirrors the "Tests" job (Go + Python tests)
+```
+
+If both pass locally, CI will almost always pass. This is the fastest feedback
+loop and needs nothing beyond `mise install` + `task setup`.
+
+### 2. Run the real workflow in a container with `act` (full fidelity)
+
+[`act`](https://github.com/nektos/act) executes the actual workflow
+(`.github/workflows/ci.yml`) inside Docker, from a clean runner image. This
+catches environment-level problems the direct commands cannot — e.g. a tool that
+is on your machine's `PATH` but never installed by the workflow (the original
+`uv`-missing failure).
+
+```shell
+# Install act (e.g. `brew install act` or `mise use act`) and start Docker.
+act -j check          # run one job
+act -j test
+act push              # run the whole push workflow
+```
+
+On Apple Silicon, add `--container-architecture linux/amd64` to match the
+`ubuntu-latest` runners.
+
+Reach for `act` specifically when a build passes locally but fails in CI (or
+vice versa): that gap is almost always an environment difference, which is
+exactly what `act` reproduces.
