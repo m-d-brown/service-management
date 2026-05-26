@@ -22,7 +22,7 @@ A tool to snapshot container versions across multiple hosts via SSH.
 Use the project's task runner to install the tool to your `$GOBIN`:
 
 ```shell
-task go:install
+task install
 ```
 
 **Usage:**
@@ -161,9 +161,10 @@ pull requests to ensure nothing slips through.
 We use [Task](https://taskfile.dev/) as our build tool. Use `task` at the root
 to manage operations across all languages:
 
-- `task check`: Format, lint, type-check, and scan all files.
+- `task check`: Lint, format-check, type-check, and scan all files.
+- `task format`: Auto-format and fix all source files.
 - `task build`: Build all binaries.
-- `task test`: Run all tests.
+- `task test`: Run all tests (Go and Python).
 - `task tidy`: Tidy all module dependencies.
 
 ## Repository Structure

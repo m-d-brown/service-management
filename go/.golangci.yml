@@ -1,0 +1,12 @@
+# golangci-lint configuration (schema v2).
+#
+# We enable the gofmt formatter so `golangci-lint run` (driven by pre-commit
+# and `task check`) reports unformatted Go code as a failure. This closes the
+# gap where `task format` would reformat files that `task check` never flagged.
+# gofmt (not gofumpt) is used to stay consistent with `go fmt`, which is what
+# `task format` runs.
+version: "2"
+
+formatters:
+  enable:
+    - gofmt

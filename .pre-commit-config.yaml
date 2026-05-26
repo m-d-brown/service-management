@@ -29,49 +29,56 @@ repos:
       - id: check-added-large-files
 
   # ----------------------------------------------------------------------------
-  # GO LINTING & FORMATTING
+  # LANGUAGE LINTERS, FORMATTERS & TYPE CHECKERS
   # ----------------------------------------------------------------------------
-  # golangci-lint is the standard Go linter. It runs dozens of checks simultaneously.
-  - repo: https://github.com/golangci/golangci-lint
-    rev: v1.59.0
+  # These are local (language: system) hooks that invoke the project's own
+  # toolchain rather than pre-commit-managed mirrors. This guarantees a single
+  # source of truth for tool versions: Go tools come from go.mod / mise, and
+  # Python tools (ruff, mypy) come from uv.lock via `uv run`. Without this, a
+  # pre-commit mirror could pin a different version than the project uses and
+  # the two would silently disagree.
+  - repo: local
     hooks:
+      # golangci-lint runs dozens of Go checks at once. It operates on the
+      # whole module, so we cd into go/ and disable per-file invocation.
       - id: golangci-lint
-        # Because our Go code lives in a subdirectory (go/), we override the
-        # entry to cd into it before running.
+        name: golangci-lint
         entry: bash -c 'cd go && golangci-lint run ./...'
         language: system
         types: [go]
-        # golangci-lint is designed to run on the entire module at once,
-        # rather than on individual files passed by pre-commit.
         pass_filenames: false
 
-  # ----------------------------------------------------------------------------
-  # PYTHON LINTING & FORMATTING
-  # ----------------------------------------------------------------------------
-  # Ruff is an extremely fast Python linter and formatter written in Rust.
-  # It replaces flake8, black, isort, and others.
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.8
-    hooks:
-      # The Ruff linter. We pass `--fix` so it automatically resolves
-      # trivial issues (like unused imports) instead of just complaining.
-      - id: ruff
-        args: [--fix]
-      # The Ruff formatter (replaces 'black'). Ensures consistent code style.
-      - id: ruff-format
+      # Ruff (lint + autofix), pinned by uv.lock. Run from the package dir so
+      # uv resolves the member's dev dependency group.
+      - id: ruff-check
+        name: ruff check
+        entry:
+          bash -c 'cd python/reboot-orchestrator && uv run ruff check --fix src/
+          tests/'
+        language: system
+        types: [python]
+        pass_filenames: false
 
-  # ----------------------------------------------------------------------------
-  # PYTHON TYPE CHECKING
-  # ----------------------------------------------------------------------------
-  # mypy enforces static typing in Python, catching bugs before runtime.
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
-    hooks:
+      # Ruff formatter (replaces black), pinned by uv.lock.
+      - id: ruff-format
+        name: ruff format
+        entry:
+          bash -c 'cd python/reboot-orchestrator && uv run ruff format src/
+          tests/'
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      # mypy static type checking against the real (uv-synced) dependencies,
+      # pinned by uv.lock.
       - id: mypy
-        # We ignore missing imports because pre-commit runs mypy in an isolated
-        # environment that doesn't have our 3rd-party dependencies installed.
-        args: [--ignore-missing-imports]
-        additional_dependencies: [types-PyYAML]
+        name: mypy
+        entry:
+          bash -c 'cd python/reboot-orchestrator && uv run mypy
+          --ignore-missing-imports src/ tests/'
+        language: system
+        types: [python]
+        pass_filenames: false
 
   # ----------------------------------------------------------------------------
   # MARKDOWN LINTING

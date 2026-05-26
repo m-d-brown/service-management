@@ -81,11 +81,12 @@ jobs:
         run: task check
 
   # ----------------------------------------------------------------------------
-  # JOB 2: GO TESTS
+  # JOB 2: TESTS
   # ----------------------------------------------------------------------------
-  # This job executes the automated unit tests for our Go tools.
-  test-go:
-    name: Go Tests
+  # This job executes the automated unit tests for all languages via
+  # `task test` (Go and Python), mirroring the local developer command.
+  test:
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -96,17 +97,18 @@ jobs:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
-      # Install task (and the rest of mise.toml) so CI uses the same runner
-      # as local development.
+      # Python is needed for the Python test suite (uv run pytest).
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      # Install task and uv (and the rest of mise.toml) so CI uses the same
+      # runner and toolchain as local development.
       - name: Install tools via mise
         uses: jdx/mise-action@v2
 
-      # Verify that go.mod and go.sum are tidy. If a developer added a
-      # dependency but forgot to run `task tidy`, this will catch it.
-      - name: Verify go.mod is tidy
-        run: task go:tidy:check
-
-      # We delegate to our Taskfile to run the tests, ensuring the CI runs
-      # the exact same command that developers use locally.
-      - name: Run Go Tests
-        run: task go:test
+      # Run the full test suite (Go + Python). go.mod tidiness is verified by
+      # the check job via `task check`.
+      - name: Run tests
+        run: task test

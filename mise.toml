@@ -13,6 +13,12 @@
 #
 # Run `mise install` to provision these tools locally.
 
+[settings]
+# Let mise honor the standard .python-version file (the canonical Python
+# version source, also read by uv and actions/setup-python) instead of
+# duplicating the version here. Idiomatic version files are opt-in per tool.
+idiomatic_version_file_enable_tools = ["python"]
+
 [tools]
 # uv drives the Python tooling (ruff, mypy, pytest) via `uv run`.
 uv = "latest"

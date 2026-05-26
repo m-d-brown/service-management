@@ -1,20 +1,5 @@
 version: "3"
 
-# ----------------------------------------------------------------------------
-# INCLUDES
-# ----------------------------------------------------------------------------
-# We include the go/Taskfile.yml under the "go" namespace. This means all
-# tasks defined in go/Taskfile.yml are available here as "go:<task-name>"
-# (e.g., go:test, go:build). The 'dir' option ensures commands run from
-# the go/ subdirectory where go.mod lives.
-includes:
-  go:
-    taskfile: go/Taskfile.yml
-    dir: go
-  python:
-    taskfile: python/reboot-orchestrator/Taskfile.yml
-    dir: python/reboot-orchestrator
-
 tasks:
   default:
     desc: List available tasks
@@ -22,31 +7,47 @@ tasks:
       - task --list
 
   setup:
-    desc: Bootstrap the repository (install git hooks and pre-commit)
+    desc: Bootstrap the repository (sync deps and install git hooks)
     cmds:
       - uv sync
       - pre-commit install
 
   build:
-    desc: Build all Go tools
+    desc: Build all binaries
     cmds:
-      - task: go:build
+      - go -C go build -o bin/container-version-snapshot
+        ./cmd/container-version-snapshot
+
+  install:
+    desc: Install binaries to GOBIN
+    cmds:
+      - go -C go install ./cmd/container-version-snapshot
 
   test:
-    desc: Run all tests
+    desc: Run all tests (Go and Python)
     cmds:
-      - task: go:test
-      - task: python:test
-
-  tidy:
-    desc: Tidy all modules
-    cmds:
-      - task: go:tidy
+      - go -C go test -v ./...
+      - uv run --directory python/reboot-orchestrator pytest tests/
 
   check:
-    desc: Format, lint, type-check, and scan all files
-    aliases: [lint, fmt]
+    desc: Lint, format-check, type-check, and scan all files
     cmds:
+      # pre-commit drives the language linters/formatters/type-checkers and
+      # the generic file, markdown, and secret hooks.
       - pre-commit run --all-files
-      - task: go:tidy:check
-      - task: python:check
+      # Verify go.mod / go.sum are tidy (fails if `task tidy` would change them).
+      - go -C go mod tidy
+      - git diff --exit-code go/go.mod go/go.sum
+
+  format:
+    desc: Auto-format and fix all source files
+    cmds:
+      - go -C go fmt ./...
+      - uv run --directory python/reboot-orchestrator ruff check --fix src/
+        tests/
+      - uv run --directory python/reboot-orchestrator ruff format src/ tests/
+
+  tidy:
+    desc: Tidy module dependencies
+    cmds:
+      - go -C go mod tidy

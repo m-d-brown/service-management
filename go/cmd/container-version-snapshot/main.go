@@ -48,13 +48,13 @@ func (s *stringSlice) Set(value string) error {
 // HostResult holds the data collected from a host
 type HostResult struct {
 	// Host is the address or alias of the target machine.
-	Host       string
+	Host string
 	// Containers holds metadata for all inspected containers on the host.
 	Containers []snapshot.InspectedContainer
 	// Images holds metadata for all inspected images on the host.
-	Images     []snapshot.InspectedImage
+	Images []snapshot.InspectedImage
 	// Error captures any error encountered during collection.
-	Error      error
+	Error error
 }
 
 // dialSSH resolves SSH config for hostAlias and makes a single dial attempt.
