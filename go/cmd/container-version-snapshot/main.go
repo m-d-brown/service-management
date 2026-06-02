@@ -289,6 +289,10 @@ func processHostData(ctx context.Context, data HostResult, client snapshot.Regis
 func printJSON(snap snapshot.Snapshot) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
+	// Match common JSON prettifiers: emit literal <, >, and & rather than the
+	// < / > / & escapes Go's encoder uses by default, so prettier
+	// and similar formatting hooks don't have to reformat the output.
+	enc.SetEscapeHTML(false)
 	if err := enc.Encode(snap); err != nil {
 		log.Fatalf("Failed to encode JSON: %v", err)
 	}
