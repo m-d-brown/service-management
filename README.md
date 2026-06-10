@@ -61,6 +61,50 @@ container-version-snapshot --host user@host1 --sudo-host user@host2
 }
 ```
 
+### `update-container-manifest`
+
+A tool to bump pinned container image versions in an Ansible-style manifest (a
+flat `images:` map of name → full image reference) to the newest stable version
+within each image's current major version.
+
+**Features:**
+
+- Queries each image's registry directly (anonymous, via `go-containerregistry`)
+  — no pulls, no local container runtime needed.
+- Conservative by design: stays within the current major version. If a newer
+  major exists, it is noted in a trailing `# newer major: X.Y.Z` comment rather
+  than applied, so major jumps stay deliberate hand-edits.
+- Understands semver (`2.11.3`), calver (`2026.5.4`) and date tags
+  (`2026-05-22`); rejects `latest`/`rc`/`beta`/`-alpine` variants and registry
+  build-id tags by shape-matching against the current pin.
+- Re-resolves the `:latest` manifest digest for digest-pinned images (those with
+  no usable version tag).
+
+**Installation:**
+
+```shell
+task install
+```
+
+**Usage:**
+
+```shell
+update-container-manifest -file ansible/images.yml            # rewrite in place
+update-container-manifest -file ansible/images.yml -dry-run   # preview only
+```
+
+**Example Output:**
+
+```text
+IMAGE      CURRENT              NEW                  NOTE
+nginx      :1.25.3              :1.25.4
+postgres   :15.6                :15.8                newer major: 17.2
+statuspage @sha256:abcd1234ef…  @sha256:5678feed90…
+redis      :7.2.4               :7.2.4
+
+Wrote ansible/images.yml — 3 image(s) changed.
+```
+
 ### `reboot-orchestrator`
 
 A lightweight, modular, and dependency-aware Python library and CLI tool
@@ -172,6 +216,8 @@ to manage operations across all languages:
 - `go/`: Go-based tools and libraries.
   - `go/cmd/container-version-snapshot`: Tool to snapshot container versions via
     SSH.
+  - `go/cmd/update-container-manifest`: Tool to bump pinned image versions in an
+    `images.yml` manifest to the newest stable within each major.
 - `python/`: (Planned) Python-based tools and libraries.
 - `design/`: Architectural design documents.
 - `skills/`: Repository-specific skills and guides.
