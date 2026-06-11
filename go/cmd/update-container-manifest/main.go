@@ -45,6 +45,17 @@ type result struct {
 	note       string // error/skip note
 }
 
+// updated reports whether the image's pinned reference actually changed.
+func (r result) updated() bool {
+	return r.note == "" && r.newRef != r.oldRef
+}
+
+// ANSI SGR escape sequences (ECMA-48) used to highlight table rows.
+const (
+	ansiGreen = "\x1b[32m" // green foreground
+	ansiReset = "\x1b[0m"  // restore default attributes
+)
+
 // registry abstracts the container registry lookups, enabling mocking in tests.
 type registry interface {
 	ListTags(repo string) ([]string, error)
@@ -81,7 +92,7 @@ func main() {
 	for _, e := range entries {
 		r := resolve(craneRegistry{}, e)
 		results = append(results, r)
-		if r.note == "" && r.newRef != r.oldRef {
+		if r.updated() {
 			changed++
 		}
 		lines[e.lineIdx] = formatLine(e, r)
@@ -250,6 +261,14 @@ func formatLine(e entry, r result) string {
 }
 
 func printTable(results []result) {
+	fmt.Print(renderTable(results, useColor()))
+}
+
+// renderTable lays out the results table. Updated rows carry an "updated"
+// status so the highlight survives piped output, and are additionally colored
+// green when color is on. ANSI codes are spliced in per line after tabwriter
+// flushes, since escape bytes inside cells would skew column widths.
+func renderTable(results []result, color bool) string {
 	// Render via tabwriter into a builder (whose Write never fails), then print.
 	var sb strings.Builder
 	w := tabwriter.NewWriter(&sb, 0, 2, 2, ' ', 0)
@@ -259,13 +278,36 @@ func printTable(results []result) {
 		switch {
 		case r.note != "":
 			status = "! " + r.note
+		case r.updated() && r.newerMajor != "":
+			status = "updated; newer major: " + r.newerMajor
+		case r.updated():
+			status = "updated"
 		case r.newerMajor != "":
 			status = "newer major: " + r.newerMajor
 		}
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.name, refTail(r.oldRef), refTail(r.newRef), status)
 	}
 	_ = w.Flush()
-	fmt.Print(sb.String())
+	if !color {
+		return sb.String()
+	}
+	lines := strings.Split(sb.String(), "\n")
+	for i, r := range results {
+		if r.updated() {
+			lines[i+1] = ansiGreen + lines[i+1] + ansiReset // i+1 skips the header
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// useColor reports whether stdout is a terminal and color is not disabled
+// via the NO_COLOR convention (https://no-color.org).
+func useColor() bool {
+	if _, set := os.LookupEnv("NO_COLOR"); set {
+		return false
+	}
+	st, err := os.Stdout.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
 // refTail trims the registry/repo prefix for compact display (the tag/digest).
