@@ -323,6 +323,48 @@ func TestAnnotationRoundTripIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestRenderTable checks that updated images are highlighted: an explicit
+// "updated" status in the NOTE column (so the marker survives piped, colorless
+// output), composed with the newer-major note when both apply, and — in color
+// mode — the whole row wrapped in green ANSI codes outside the tabwriter
+// layout so column alignment is unaffected.
+func TestRenderTable(t *testing.T) {
+	results := []result{
+		{name: "nginx", oldRef: "docker.io/library/nginx:1.25.3", newRef: "docker.io/library/nginx:1.25.5"},
+		{name: "postgres", oldRef: "docker.io/library/postgres:15.8", newRef: "docker.io/library/postgres:15.8"},
+		{name: "redis", oldRef: "docker.io/library/redis:6.2.14", newRef: "docker.io/library/redis:6.2.16", newerMajor: "7.4.1"},
+		{name: "broken", oldRef: "docker.io/example/broken:1.0.0", newRef: "docker.io/example/broken:1.0.0", note: "listing tags: boom"},
+	}
+
+	plain := renderTable(results, false)
+	for _, want := range []string{
+		"updated\n",
+		"updated; newer major: 7.4.1",
+		"! listing tags: boom",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("plain table missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "\x1b[") {
+		t.Errorf("plain table contains ANSI codes:\n%s", plain)
+	}
+	// The unchanged row gets no status: after the NEW column the line is blank.
+	for _, ln := range strings.Split(plain, "\n") {
+		if strings.HasPrefix(ln, "postgres") && !strings.HasSuffix(strings.TrimRight(ln, " "), ":15.8") {
+			t.Errorf("unchanged row should have empty NOTE: %q", ln)
+		}
+	}
+
+	colored := renderTable(results, true)
+	for _, ln := range strings.Split(colored, "\n") {
+		updated := strings.Contains(ln, "nginx") || strings.Contains(ln, "redis")
+		if got := strings.HasPrefix(ln, ansiGreen) && strings.HasSuffix(ln, ansiReset); got != updated {
+			t.Errorf("row colored=%v, want %v: %q", got, updated, ln)
+		}
+	}
+}
+
 // TestRefTail checks the table's compact display form: tags shown as-is,
 // digests truncated to a recognizable prefix, and a bare repo (no tag or
 // digest) passed through unchanged.
