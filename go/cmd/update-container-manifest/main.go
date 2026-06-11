@@ -45,6 +45,20 @@ type result struct {
 	note       string // error/skip note
 }
 
+// registry abstracts the container registry lookups, enabling mocking in tests.
+type registry interface {
+	ListTags(repo string) ([]string, error)
+	LatestDigest(repo string) (string, error)
+}
+
+// craneRegistry is the real implementation using go-containerregistry.
+type craneRegistry struct{}
+
+func (craneRegistry) ListTags(repo string) ([]string, error) { return crane.ListTags(repo) }
+func (craneRegistry) LatestDigest(repo string) (string, error) {
+	return crane.Digest(repo + ":latest")
+}
+
 func main() {
 	file := flag.String("file", "ansible/images.yml", "path to the images manifest")
 	dryRun := flag.Bool("dry-run", false, "print proposed changes without writing")
@@ -65,7 +79,7 @@ func main() {
 	var results []result
 	changed := 0
 	for _, e := range entries {
-		r := resolve(e)
+		r := resolve(craneRegistry{}, e)
 		results = append(results, r)
 		if r.note == "" && r.newRef != r.oldRef {
 			changed++
@@ -125,10 +139,10 @@ func parseEntries(lines []string) []entry {
 	return out
 }
 
-func resolve(e entry) result {
+func resolve(reg registry, e entry) result {
 	r := result{name: e.name, oldRef: currentRef(e)}
 	if e.digest != "" {
-		dig, err := crane.Digest(e.repo + ":latest")
+		dig, err := reg.LatestDigest(e.repo)
 		if err != nil {
 			r.newRef, r.note = r.oldRef, oneLine(err.Error())
 			return r
@@ -137,7 +151,7 @@ func resolve(e entry) result {
 		return r
 	}
 
-	tags, err := crane.ListTags(e.repo)
+	tags, err := reg.ListTags(e.repo)
 	if err != nil {
 		r.newRef, r.note = r.oldRef, oneLine(err.Error())
 		return r
