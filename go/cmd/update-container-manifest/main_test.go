@@ -349,10 +349,21 @@ func TestRenderTable(t *testing.T) {
 	if strings.Contains(plain, "\x1b[") {
 		t.Errorf("plain table contains ANSI codes:\n%s", plain)
 	}
-	// The unchanged row gets no status: after the NEW column the line is blank.
+	// Unchanged (and errored) rows leave NEW and NOTE blank: the version
+	// appears once, in CURRENT, so updated rows stand out.
 	for _, ln := range strings.Split(plain, "\n") {
-		if strings.HasPrefix(ln, "postgres") && !strings.HasSuffix(strings.TrimRight(ln, " "), ":15.8") {
-			t.Errorf("unchanged row should have empty NOTE: %q", ln)
+		if strings.HasPrefix(ln, "postgres") {
+			if got := strings.Count(ln, ":15.8"); got != 1 {
+				t.Errorf("unchanged row should show the version only under CURRENT (got %d occurrences): %q", got, ln)
+			}
+			if !strings.HasSuffix(strings.TrimRight(ln, " "), ":15.8") {
+				t.Errorf("unchanged row should have empty NEW and NOTE: %q", ln)
+			}
+		}
+		if strings.HasPrefix(ln, "broken") {
+			if got := strings.Count(ln, ":1.0.0"); got != 1 {
+				t.Errorf("errored row should keep NEW blank (got %d occurrences): %q", got, ln)
+			}
 		}
 	}
 
