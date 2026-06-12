@@ -285,7 +285,12 @@ func renderTable(results []result, color bool) string {
 		case r.newerMajor != "":
 			status = "newer major: " + r.newerMajor
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.name, refTail(r.oldRef), refTail(r.newRef), status)
+		// Leave NEW blank when the pin didn't change, so updated rows stand out.
+		newCol := ""
+		if r.updated() {
+			newCol = refTail(r.newRef)
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.name, refTail(r.oldRef), newCol, status)
 	}
 	_ = w.Flush()
 	if !color {
