@@ -6,9 +6,9 @@ require (
 	github.com/google/go-containerregistry v0.21.6
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/sethvargo/go-retry v0.3.0
-	golang.org/x/crypto v0.51.0
-	golang.org/x/mod v0.36.0
-	golang.org/x/sync v0.20.0
+	golang.org/x/crypto v0.53.0
+	golang.org/x/mod v0.37.0
+	golang.org/x/sync v0.21.0
 )
 
 require (
@@ -18,6 +18,6 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )
