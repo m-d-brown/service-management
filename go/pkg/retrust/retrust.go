@@ -5,13 +5,15 @@
 // "REMOTE HOST IDENTIFICATION HAS CHANGED". Blindly deleting the known_hosts
 // entry and reconnecting would accept whatever key the network presents; this
 // package instead reads each guest's public host keys out-of-band through the
-// Proxmox hypervisor (`qm guest exec` for VMs, `pct exec` for LXCs) and
-// replaces only stale known_hosts entries with those verified keys.
+// Proxmox hypervisor — the API's guest-agent file-read (via pvesh) for VMs,
+// `pct exec` for LXCs, which the API cannot reach into — and replaces only
+// stale known_hosts entries with those verified keys.
 //
 // Root of trust: the SSH host keys of the Proxmox nodes themselves, which are
 // long-lived and must already be trusted. Connections deliberately go through
 // the system ssh binary so the user's own known_hosts and ssh_config govern
-// node verification.
+// node verification; pvesh then exposes the Proxmox API locally on the node,
+// avoiding a second trust root (API tokens, TLS pinning) entirely.
 package retrust
 
 import (
@@ -22,7 +24,17 @@ import (
 	"strings"
 )
 
-// readPubKeys runs on the guest via qm guest exec / pct exec.
+// hostKeyPaths are the standard OpenSSH host key files read from VM guests.
+// The agent's file-read endpoint takes exact paths (no globs), so the
+// standard names are tried individually; missing types are skipped.
+var hostKeyPaths = []string{
+	"/etc/ssh/ssh_host_rsa_key.pub",
+	"/etc/ssh/ssh_host_ecdsa_key.pub",
+	"/etc/ssh/ssh_host_ed25519_key.pub",
+}
+
+// readPubKeys runs on LXC guests via pct exec; containers have no guest
+// agent or API file-read, so the files are read with a shell glob instead.
 const readPubKeys = "sh -c 'cat /etc/ssh/ssh_host_*.pub'"
 
 // Runner executes a command and returns its stdout. It exists so tests can
@@ -43,7 +55,7 @@ func ExecRunner(name string, args ...string) (string, error) {
 
 // Guest is one running VM or LXC on a Proxmox node.
 type Guest struct {
-	// Kind is "vm" (qm) or "lxc" (pct).
+	// Kind is "vm" (qemu) or "lxc".
 	Kind string
 	// VMID is the numeric Proxmox guest ID, as a string.
 	VMID string
@@ -52,44 +64,24 @@ type Guest struct {
 	Name string
 }
 
-// ParseQMList yields the running VMs from `qm list` output.
-func ParseQMList(output string) []Guest {
+// ParseGuestList yields the running guests of one kind from a pvesh guest
+// list JSON response (`pvesh get /nodes/localhost/{qemu,lxc}`).
+func ParseGuestList(kind, jsonText string) ([]Guest, error) {
+	var entries []struct {
+		VMID   json.Number `json:"vmid"`
+		Name   string      `json:"name"`
+		Status string      `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(jsonText), &entries); err != nil {
+		return nil, fmt.Errorf("parse %s guest list: %w", kind, err)
+	}
 	var guests []Guest
-	for _, line := range splitDataLines(output) {
-		fields := strings.Fields(line)
-		if len(fields) >= 3 && fields[2] == "running" {
-			guests = append(guests, Guest{Kind: "vm", VMID: fields[0], Name: fields[1]})
+	for _, entry := range entries {
+		if entry.Status == "running" {
+			guests = append(guests, Guest{Kind: kind, VMID: entry.VMID.String(), Name: entry.Name})
 		}
 	}
-	return guests
-}
-
-// ParsePCTList yields the running LXCs from `pct list` output.
-func ParsePCTList(output string) []Guest {
-	var guests []Guest
-	for _, line := range splitDataLines(output) {
-		// The lock column may be empty: the name is the last field.
-		fields := strings.Fields(line)
-		if len(fields) >= 3 && fields[1] == "running" {
-			guests = append(guests, Guest{Kind: "lxc", VMID: fields[0], Name: fields[len(fields)-1]})
-		}
-	}
-	return guests
-}
-
-// splitDataLines drops the header line and blank lines from tabular output.
-func splitDataLines(output string) []string {
-	lines := strings.Split(output, "\n")
-	if len(lines) == 0 {
-		return nil
-	}
-	var data []string
-	for _, line := range lines[1:] {
-		if strings.TrimSpace(line) != "" {
-			data = append(data, line)
-		}
-	}
-	return data
+	return guests, nil
 }
 
 // ParsePublicKeys returns "<keytype> <base64-key>" per line, dropping
@@ -139,41 +131,54 @@ func TrustNames(reported string, aliases []string) []string {
 	return names
 }
 
-// RunningGuests lists the running VMs and LXCs on one Proxmox node.
+// RunningGuests lists the running VMs and LXCs on one Proxmox node, via the
+// node-local API (pvesh) for typed JSON rather than human-oriented CLI output.
 func RunningGuests(run Runner, node string) ([]Guest, error) {
-	qm, err := run("ssh", node, "qm list")
-	if err != nil {
-		return nil, err
+	var all []Guest
+	for _, list := range []struct{ kind, apiPath string }{
+		{"vm", "qemu"},
+		{"lxc", "lxc"},
+	} {
+		output, err := run("ssh", node,
+			fmt.Sprintf("pvesh get /nodes/localhost/%s --output-format json", list.apiPath))
+		if err != nil {
+			return nil, err
+		}
+		guests, err := ParseGuestList(list.kind, output)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, guests...)
 	}
-	pct, err := run("ssh", node, "pct list")
-	if err != nil {
-		return nil, err
-	}
-	return append(ParseQMList(qm), ParsePCTList(pct)...), nil
+	return all, nil
 }
 
 // GuestHostKeys reads a guest's public SSH host keys through the hypervisor.
-// It returns nil if the guest is unreachable (e.g. its guest agent is not
-// running).
+// It returns nil if the guest is unreachable (e.g. a VM's guest agent is not
+// running, in which case every file-read fails).
 func GuestHostKeys(run Runner, node string, guest Guest) []string {
-	remote := fmt.Sprintf("pct exec %s -- %s", guest.VMID, readPubKeys)
-	if guest.Kind == "vm" {
-		remote = fmt.Sprintf("qm guest exec %s -- %s", guest.VMID, readPubKeys)
-	}
-	output, err := run("ssh", node, remote)
-	if err != nil {
-		return nil
-	}
-	if guest.Kind == "vm" {
-		// `qm guest exec` wraps the command's output in JSON.
-		var reply struct {
-			Exitcode int    `json:"exitcode"`
-			OutData  string `json:"out-data"`
-		}
-		if json.Unmarshal([]byte(output), &reply) != nil || reply.Exitcode != 0 {
+	if guest.Kind == "lxc" {
+		output, err := run("ssh", node, fmt.Sprintf("pct exec %s -- %s", guest.VMID, readPubKeys))
+		if err != nil {
 			return nil
 		}
-		output = reply.OutData
+		return ParsePublicKeys(output)
 	}
-	return ParsePublicKeys(output)
+	var keys []string
+	for _, path := range hostKeyPaths {
+		output, err := run("ssh", node, fmt.Sprintf(
+			"pvesh get /nodes/localhost/qemu/%s/agent/file-read --file %s --output-format json",
+			guest.VMID, path))
+		if err != nil {
+			continue // this key type is absent, or the agent is down
+		}
+		var fileRead struct {
+			Content string `json:"content"`
+		}
+		if json.Unmarshal([]byte(output), &fileRead) != nil {
+			continue
+		}
+		keys = append(keys, ParsePublicKeys(fileRead.Content)...)
+	}
+	return keys
 }

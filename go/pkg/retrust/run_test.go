@@ -5,8 +5,7 @@ package retrust
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,16 +23,18 @@ func fakeRunner(t *testing.T) Runner {
 		}
 		remote := args[1]
 		switch {
-		case remote == "qm list":
-			return qmList, nil
-		case remote == "pct list":
-			return pctList, nil
-		case strings.HasPrefix(remote, "qm guest exec 201"):
-			reply, _ := json.Marshal(map[string]any{
-				"exitcode": 0,
-				"out-data": fmt.Sprintf("%s root@citrus\n%s root@citrus\n", ed25519Key, rsaKey),
-			})
-			return string(reply), nil
+		case remote == "pvesh get /nodes/localhost/qemu --output-format json":
+			return qemuListJSON, nil
+		case remote == "pvesh get /nodes/localhost/lxc --output-format json":
+			return lxcListJSON, nil
+		case strings.HasPrefix(remote, "pvesh get /nodes/localhost/qemu/201/agent/file-read"):
+			switch {
+			case strings.Contains(remote, "ssh_host_rsa_key.pub"):
+				return fileReadJSON(rsaKey + " root@citrus\n"), nil
+			case strings.Contains(remote, "ssh_host_ed25519_key.pub"):
+				return fileReadJSON(ed25519Key + " root@citrus\n"), nil
+			}
+			return "", errors.New("no such file")
 		case strings.HasPrefix(remote, "pct exec 202"):
 			return beaconKey + " root@beacon\n", nil
 		}
