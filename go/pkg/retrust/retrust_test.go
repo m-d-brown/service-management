@@ -4,7 +4,6 @@ package retrust
 // (192.0.2.0/24).
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -18,49 +17,49 @@ const (
 	beaconKey  = "ssh-ed25519 AAAAC3Nza_beacon_ed25519_key"
 )
 
-const qmList = `      VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID
-       201 citrus               running    4096             150.00 1000
-       900 dormant-vm           stopped    512                8.00 0
-`
+const qemuListJSON = `[
+  {"vmid": 201, "name": "citrus", "status": "running", "mem": 4096},
+  {"vmid": 900, "name": "dormant-vm", "status": "stopped", "mem": 512}
+]`
 
-// pct reports the LXC by its hostname (FQDN) and has an empty Lock column.
-const pctList = `VMID       Status     Lock         Name
-202        running                 beacon.lab.example
-901        stopped                 dormant-lxc
-`
+// LXCs are often reported by their hostname (FQDN).
+const lxcListJSON = `[
+  {"vmid": 202, "name": "beacon.lab.example", "status": "running"},
+  {"vmid": 901, "name": "dormant-lxc", "status": "stopped"}
+]`
 
-func TestParseQMListRunningOnly(t *testing.T) {
-	got := ParseQMList(qmList)
+// fileReadJSON wraps a file's content the way the agent file-read endpoint
+// reports it.
+func fileReadJSON(content string) string {
+	return fmt.Sprintf(`{"content": %q, "truncated": 0}`, content)
+}
+
+func TestParseGuestListRunningOnly(t *testing.T) {
+	got, err := ParseGuestList("vm", qemuListJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []Guest{{Kind: "vm", VMID: "201", Name: "citrus"}}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ParseQMList = %v, want %v", got, want)
+		t.Errorf("ParseGuestList(vm) = %v, want %v", got, want)
 	}
-}
 
-func TestParsePCTListRunningOnlyWithEmptyLockColumn(t *testing.T) {
-	got := ParsePCTList(pctList)
-	want := []Guest{{Kind: "lxc", VMID: "202", Name: "beacon.lab.example"}}
+	got, err = ParseGuestList("lxc", lxcListJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []Guest{{Kind: "lxc", VMID: "202", Name: "beacon.lab.example"}}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ParsePCTList = %v, want %v", got, want)
+		t.Errorf("ParseGuestList(lxc) = %v, want %v", got, want)
 	}
 }
 
-func TestParsePCTListWithLockColumnStillTakesLastField(t *testing.T) {
-	output := "VMID       Status     Lock         Name\n" +
-		"203        running    backup       lockedguest\n"
-	got := ParsePCTList(output)
-	want := []Guest{{Kind: "lxc", VMID: "203", Name: "lockedguest"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ParsePCTList = %v, want %v", got, want)
+func TestParseGuestListEmptyAndInvalid(t *testing.T) {
+	if got, err := ParseGuestList("vm", "[]"); err != nil || got != nil {
+		t.Errorf("ParseGuestList on empty = %v, %v; want nil, nil", got, err)
 	}
-}
-
-func TestParseEmptyListings(t *testing.T) {
-	if got := ParseQMList("HEADER\n"); got != nil {
-		t.Errorf("ParseQMList on empty = %v, want nil", got)
-	}
-	if got := ParsePCTList("HEADER\n"); got != nil {
-		t.Errorf("ParsePCTList on empty = %v, want nil", got)
+	if _, err := ParseGuestList("vm", "not json"); err == nil {
+		t.Error("ParseGuestList on invalid JSON should error")
 	}
 }
 
@@ -113,10 +112,10 @@ func TestTrustNamesOrderAndDedup(t *testing.T) {
 func TestRunningGuestsCombinesVMsAndLXCs(t *testing.T) {
 	runner := func(name string, args ...string) (string, error) {
 		switch args[1] {
-		case "qm list":
-			return qmList, nil
-		case "pct list":
-			return pctList, nil
+		case "pvesh get /nodes/localhost/qemu --output-format json":
+			return qemuListJSON, nil
+		case "pvesh get /nodes/localhost/lxc --output-format json":
+			return lxcListJSON, nil
 		}
 		return "", fmt.Errorf("unexpected command: %v", args)
 	}
@@ -133,14 +132,21 @@ func TestRunningGuestsCombinesVMsAndLXCs(t *testing.T) {
 	}
 }
 
-func TestGuestHostKeysVMUnwrapsAgentJSON(t *testing.T) {
-	reply, _ := json.Marshal(map[string]any{
-		"exitcode": 0,
-		"out-data": fmt.Sprintf("%s root@citrus\n%s root@citrus\n", ed25519Key, rsaKey),
-	})
-	runner := func(name string, args ...string) (string, error) { return string(reply), nil }
+func TestGuestHostKeysVMReadsEachKeyFileSkippingAbsentTypes(t *testing.T) {
+	runner := func(name string, args ...string) (string, error) {
+		remote := args[1]
+		switch {
+		case strings.Contains(remote, "ssh_host_rsa_key.pub"):
+			return fileReadJSON(rsaKey + " root@citrus\n"), nil
+		case strings.Contains(remote, "ssh_host_ecdsa_key.pub"):
+			return "", errors.New("no such file")
+		case strings.Contains(remote, "ssh_host_ed25519_key.pub"):
+			return fileReadJSON(ed25519Key + " root@citrus\n"), nil
+		}
+		return "", fmt.Errorf("unexpected command: %v", args)
+	}
 	got := GuestHostKeys(runner, "root@node", Guest{Kind: "vm", VMID: "201"})
-	want := []string{ed25519Key, rsaKey}
+	want := []string{rsaKey, ed25519Key}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("GuestHostKeys = %v, want %v", got, want)
 	}
@@ -156,34 +162,34 @@ func TestGuestHostKeysLXCUsesPlainOutput(t *testing.T) {
 	}
 }
 
-func TestGuestHostKeysAgentFailureReturnsNil(t *testing.T) {
+func TestGuestHostKeysAgentDownReturnsNil(t *testing.T) {
 	runner := func(name string, args ...string) (string, error) {
-		return `{"exitcode": 1, "out-data": ""}`, nil
+		return "", errors.New("QEMU guest agent is not running")
 	}
 	if got := GuestHostKeys(runner, "root@node", Guest{Kind: "vm", VMID: "100"}); got != nil {
 		t.Errorf("GuestHostKeys = %v, want nil", got)
 	}
 }
 
-func TestGuestHostKeysSSHFailureReturnsNil(t *testing.T) {
+func TestGuestHostKeysLXCSSHFailureReturnsNil(t *testing.T) {
 	runner := func(name string, args ...string) (string, error) {
 		return "", errors.New("connection refused")
 	}
-	if got := GuestHostKeys(runner, "root@node", Guest{Kind: "vm", VMID: "201"}); got != nil {
+	if got := GuestHostKeys(runner, "root@node", Guest{Kind: "lxc", VMID: "202"}); got != nil {
 		t.Errorf("GuestHostKeys = %v, want nil", got)
 	}
 }
 
 func TestGuestHostKeysCommandShape(t *testing.T) {
 	for kind, wantPrefix := range map[string]string{
-		"vm":  "qm guest exec 201 --",
+		"vm":  "pvesh get /nodes/localhost/qemu/201/agent/file-read --file /etc/ssh/ssh_host_",
 		"lxc": "pct exec 201 --",
 	} {
 		var seen string
 		runner := func(name string, args ...string) (string, error) {
 			seen = args[1]
 			if kind == "vm" {
-				return `{"exitcode": 0, "out-data": ""}`, nil
+				return fileReadJSON(""), nil
 			}
 			return "", nil
 		}

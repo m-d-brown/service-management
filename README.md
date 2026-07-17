@@ -168,9 +168,10 @@ out-of-band via the hypervisor.
 **Features:**
 
 - **No trust-on-first-use**: reads each guest's public host keys through the
-  Proxmox hypervisor (`qm guest exec` for VMs, `pct exec` for LXCs) rather than
-  trusting whatever key the network presents after a "REMOTE HOST IDENTIFICATION
-  HAS CHANGED" failure.
+  Proxmox hypervisor (the API's guest-agent file-read via `pvesh` for VMs,
+  `pct exec` for LXCs, which the API cannot reach into) rather than trusting
+  whatever key the network presents after a "REMOTE HOST IDENTIFICATION HAS
+  CHANGED" failure.
 - **Every name covered**: SSH records trust per name-as-typed, so entries are
   maintained under each guest's name plus any supplied FQDN/IP aliases, on a
   single combined known_hosts line.
