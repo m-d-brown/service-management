@@ -160,6 +160,55 @@ Waiting for vm-a to return online...
 All tiers complete. Reboot orchestration finished successfully.
 ```
 
+### `proxmox-retrust-host-keys`
+
+A CLI tool to safely re-trust SSH host keys of Proxmox guests, verified
+out-of-band via the hypervisor.
+
+**Features:**
+
+- **No trust-on-first-use**: reads each guest's public host keys through the
+  Proxmox hypervisor (`qm guest exec` for VMs, `pct exec` for LXCs) rather than
+  trusting whatever key the network presents after a "REMOTE HOST IDENTIFICATION
+  HAS CHANGED" failure.
+- **Every name covered**: SSH records trust per name-as-typed, so entries are
+  maintained under each guest's name plus any supplied FQDN/IP aliases, on a
+  single combined known_hosts line.
+- **Idempotent**: only stale entries are replaced; a `--dry-run` mode reports
+  what would change.
+
+**Installation:**
+
+```shell
+task install
+```
+
+**Usage:**
+
+```shell
+proxmox-retrust-host-keys --node root@pve1.example.com \
+    webhost=webhost.example.com,192.0.2.20
+```
+
+- `--node SSH_DEST` (repeatable): a Proxmox node to query, through the system
+  `ssh` binary so your own known_hosts and ssh_config govern node verification.
+- `GUEST[=NAME,...]` (optional): limit to these guests; each may carry
+  comma-separated extra names (FQDN, IP) to maintain its known_hosts entries
+  under. With no guest arguments every running guest is processed.
+- `--dry-run` reports stale entries without touching known_hosts, exiting 1 if
+  any are stale. `--known-hosts FILE` overrides `~/.ssh/known_hosts`.
+
+VMs must run the QEMU guest agent to be readable; guests without one are
+reported as warnings and skipped.
+
+**Example Output:**
+
+```text
+ok:        webhost already trusted
+retrusted: database 3 verified keys installed under 3 names
+WARN:      appliance (vmid 105 on root@pve1.example.com): can't read keys
+```
+
 ## Getting Started / Contributing
 
 This repository uses [mise](https://mise.jdx.dev/) to provision its CLI tools,
