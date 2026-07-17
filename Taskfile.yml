@@ -19,12 +19,15 @@ tasks:
         ./cmd/container-version-snapshot
       - go -C go build -o bin/update-container-manifest
         ./cmd/update-container-manifest
+      - go -C go build -o bin/proxmox-retrust-host-keys
+        ./cmd/proxmox-retrust-host-keys
 
   install:
     desc: Install binaries to GOBIN
     cmds:
       - go -C go install ./cmd/container-version-snapshot
       - go -C go install ./cmd/update-container-manifest
+      - go -C go install ./cmd/proxmox-retrust-host-keys
 
   test:
     desc: Run all tests (Go and Python)
