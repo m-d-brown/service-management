@@ -197,11 +197,6 @@ class RebootOrchestrator:
         inventory = self.get_inventory()
         self.validate_targets(inventory, target_hosts)
 
-        print(
-            "\nThe following hosts will be rebooted (parents first, nested dependents last):"
-        )
-        self.print_dependency_tree(target_hosts, inventory)
-
         active_queue = set(target_hosts)
         tier_map = self.build_execution_tiers(active_queue, inventory)
         executed_workarounds: set[str] = set()
