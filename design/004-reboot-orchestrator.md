@@ -30,6 +30,9 @@ reboots across network infrastructure.
 - **Reachability and State Verification**: Track system online/offline
   transitions asynchronously using continuous ICMP ping loops to guarantee a
   tier is fully online before moving to the next.
+- **Proof of Reboot**: Compare each host's kernel boot identity before and after
+  the reboot so that a host which never restarted is reported rather than
+  silently counted as successful.
 - **ACPI "Zombie" VM Workaround**: Safely handle virtual machines suffering from
   poweroff/ACPI bugs by executing pre-flight graceful halts and issuing fallback
   VM cut-power commands on the hypervisor host.
@@ -45,6 +48,7 @@ graph TD
     Executor -->|Parallel direct SSH reboot| Targets[(Target Systems)]
     Executor -->|Pre-flight VM graceful halt & hypervisor qm stop| Hypervisor[(Proxmox Hosts)]
     Executor -->|Asynchronous ICMP ping tracking| Ping[Ping Reachability Monitor]
+    Executor -->|boot_id/uptime probe before and after| Verifier[Boot State Verifier]
 ```
 
 ### 1. Inventory & Dependency Parsing
@@ -98,6 +102,36 @@ Reboots and workarounds are triggered directly using standard `ssh` commands:
   tier are fully reachable and online before the orchestrator progresses to the
   next tier.
 
+### 5. Boot State Verification
+
+Reachability is a necessary but insufficient signal: a host whose reboot command
+never landed answers pings continuously and is indistinguishable from one that
+restarted quickly. Each tier is therefore bracketed by a boot identity probe.
+
+- **Markers**: `/proc/sys/kernel/random/boot_id` is authoritative because the
+  kernel regenerates it on every boot. `/proc/uptime` is the fallback for hosts
+  that expose no boot ID (busybox-based firmware, network appliances). Both are
+  read in a single POSIX-shell command over SSH.
+- **Baseline timing**: The pre-reboot probe runs at the top of the tier, before
+  any zombie VM workaround powers a guest down, so the workaround cannot race
+  the probe.
+- **Comparison**: A changed boot ID confirms the reboot. Without a boot ID, an
+  uptime that dropped below its previous value, or below the elapsed wall-clock
+  window between the two readings, confirms it. An unchanged boot ID or an
+  uptime that kept accumulating proves the host stayed up.
+- **Unverifiable hosts**: A failed probe, or a host exposing neither marker, is
+  reported as unverified rather than assumed successful.
+- **Failure handling**: Orchestration continues through the remaining tiers so a
+  run is never left half-applied, and closes with a summary grouping hosts by
+  outcome. The CLI exits non-zero when a host is proven not to have rebooted.
+
+### 6. Command Transparency
+
+Every SSH and ping invocation is echoed as a quoted, copy-pasteable shell line
+before it executes. Because the tool mutates infrastructure state through
+fire-and-forget subprocesses, an operator watching the run can see exactly what
+was attempted against which host and reproduce any step by hand.
+
 ---
 
 ## Key Design Decisions & Rationale
@@ -117,7 +151,17 @@ Python was selected as the implementation language for several reasons:
   `subprocess.Popen` and easy reachability checks without external third-party
   execution wrappers.
 
-### 2. Generic VM ACPI Zombie Intervention
+### 2. Boot Identity Over Command Exit Status
+
+An obvious alternative is to check the exit status of the reboot command itself.
+This is unreliable: `reboot` severs the SSH connection as a matter of course, so
+a non-zero status is expected on success, and the command is dispatched
+asynchronously precisely so that connection drops do not hang the orchestrator.
+Reading the boot identity from the host after it returns measures the outcome
+that actually matters — whether the kernel restarted — rather than whether a
+command was accepted.
+
+### 3. Generic VM ACPI Zombie Intervention
 
 While virtual guest management utilities (such as QEMU guest agents) gracefully
 shut down VMs via standard ACPI power off signals, certain virtualized guest

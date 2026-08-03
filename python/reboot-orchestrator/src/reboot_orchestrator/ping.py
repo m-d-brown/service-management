@@ -9,6 +9,22 @@ from typing import Any
 import subprocess
 import time
 
+from reboot_orchestrator.ssh import format_command
+
+
+def ping_command(ip_or_host: str, timeout: int = 1) -> list[str]:
+    """
+    Builds the ICMP reachability command used to poll a host.
+
+    Args:
+        ip_or_host: The IP address or hostname to ping.
+        timeout: Timeout in seconds for the ping response.
+
+    Returns:
+        list[str]: The argument vector passed to subprocess.
+    """
+    return ["ping", "-c", "1", "-W", str(timeout), ip_or_host]
+
 
 def ping_host(ip_or_host: str, timeout: int = 1) -> bool:
     """
@@ -21,8 +37,9 @@ def ping_host(ip_or_host: str, timeout: int = 1) -> bool:
     Returns:
         bool: True if the host responds to the ping, False otherwise.
     """
-    cmd = ["ping", "-c", "1", "-W", str(timeout), ip_or_host]
-    res = subprocess.run(cmd, capture_output=True, check=False)
+    res = subprocess.run(
+        ping_command(ip_or_host, timeout), capture_output=True, check=False
+    )
     return res.returncode == 0
 
 
@@ -60,11 +77,17 @@ def wait_for_hosts(
         props = inventory.get(h, {})
         ip_map[h] = props.get("ip_addr") or props.get("ansible_host") or h
 
+    # Announce the polling command once rather than on every loop iteration.
+    for h in sorted(pending):
+        print(f"  $ {format_command(ping_command(ip_map[h], ping_timeout))}")
+
     # Continuous ping loop until all pending hosts are resolved
     while pending:
         for h in list(pending):
             if ping_host(ip_map[h], timeout=ping_timeout):
-                print(f"[✓] {h} is back online!")
+                # Reachable is not the same as rebooted; boot state verification
+                # in the orchestrator decides whether the host actually restarted.
+                print(f"[✓] {h} is reachable.")
                 pending.remove(h)
         if pending:
             time.sleep(2)

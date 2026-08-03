@@ -23,6 +23,48 @@ before the systems that depend on them are touched.
   network/connectivity drops do not hang the orchestrator.
 - **Ping Tracking**: Asynchronously tracks host status using continuous ICMP
   ping loops to guarantee a tier is fully online before moving to the next.
+- **Boot State Verification**: Records each host's kernel boot ID (or uptime)
+  over SSH before the reboot and re-reads it afterwards, so a host that answered
+  ping without ever restarting is reported instead of silently passing.
+- **Command Transparency**: Every SSH and ping command is echoed as a
+  copy-pasteable shell line before it runs.
+
+---
+
+## Verifying That Hosts Actually Rebooted
+
+ICMP reachability alone cannot prove a reboot happened. If the reboot command
+never lands — failed SSH authentication, denied `sudo`, a hung shutdown unit —
+the host keeps answering pings and looks identical to one that came back up.
+
+Before rebooting a tier, the orchestrator reads two markers over SSH:
+
+- `/proc/sys/kernel/random/boot_id`, regenerated on every boot (authoritative).
+- `/proc/uptime`, used for hosts that expose no boot ID (busybox, appliance
+  firmware, network gear).
+
+Once the tier is reachable again, both are re-read and compared:
+
+| Outcome              | Meaning                                             | Reported as                   |
+| -------------------- | --------------------------------------------------- | ----------------------------- |
+| Boot ID changed      | The host restarted                                  | `[✓] host rebooted`           |
+| Uptime reset         | The host restarted (no boot ID available)           | `[✓] host rebooted`           |
+| Boot ID unchanged    | The host never went down                            | `[✗] WARNING: did NOT reboot` |
+| Uptime kept climbing | The host never went down                            | `[✗] WARNING: did NOT reboot` |
+| Probe failed/absent  | SSH unreachable, or the host exposes neither marker | `[?] WARNING: unverified`     |
+
+A run ends with a summary of all three categories. The CLI exits non-zero when
+any host is proven not to have rebooted; hosts that merely could not be verified
+warn without failing the run. Orchestration always continues through remaining
+tiers so a partial run is never left half-applied — the summary is the record of
+what to retry.
+
+The pre-reboot probe doubles as an SSH pre-flight check: a host that cannot be
+probed almost certainly cannot be rebooted over SSH either, and is called out
+before the reboot is issued.
+
+Use `--skip-boot-verification` for fleets where SSH-based inspection is not
+possible; the tool then falls back to the original ping-only behavior.
 
 ---
 
@@ -84,13 +126,22 @@ reboot-orchestrator [options] host1 host2 [host3 ...]
 
 ### Options
 
-| Flag                         | Default         | Description                                             |
-| ---------------------------- | --------------- | ------------------------------------------------------- |
-| `--inventory`, `-i`          | `inventory.yml` | Path to the Ansible inventory file                      |
-| `--yes`, `-y`                | `False`         | Bypass interactive confirmation prompt                  |
-| `--ping-timeout`             | `1`             | Timeout in seconds for single ping queries              |
-| `--wait-drop-seconds`        | `15`            | Seconds to wait for hosts to drop off network           |
-| `--zombie-halt-wait-seconds` | `15`            | Seconds to wait for VM graceful halt before forced stop |
+| Flag                         | Default         | Description                                              |
+| ---------------------------- | --------------- | -------------------------------------------------------- |
+| `--inventory`, `-i`          | `inventory.yml` | Path to the Ansible inventory file                       |
+| `--yes`, `-y`                | `False`         | Bypass interactive confirmation prompt                   |
+| `--ping-timeout`             | `1`             | Timeout in seconds for single ping queries               |
+| `--wait-drop-seconds`        | `15`            | Seconds to wait for hosts to drop off network            |
+| `--zombie-halt-wait-seconds` | `15`            | Seconds to wait for VM graceful halt before forced stop  |
+| `--skip-boot-verification`   | `False`         | Skip the SSH boot state check that proves hosts rebooted |
+| `--probe-timeout-seconds`    | `15`            | Timeout in seconds for each SSH boot state probe         |
+
+### Exit Codes
+
+| Code | Meaning                                                                                        |
+| ---- | ---------------------------------------------------------------------------------------------- |
+| `0`  | All tiers completed; no host was proven to have skipped its reboot                             |
+| `1`  | Pre-flight validation failed, orchestration errored, or a host was proven not to have rebooted |
 
 ---
 
@@ -121,5 +172,9 @@ targets = {"hypervisor-1", "vm-a"}
 orchestrator.validate_targets(inventory, targets)
 
 # 6. Execute tiered reboot orchestration
-orchestrator.run(target_hosts=targets)
+verifications = orchestrator.run(target_hosts=targets)
+
+# 7. Inspect which hosts were proven to have rebooted
+for result in verifications:
+    print(result.host, result.status.value, result.detail)
 ```

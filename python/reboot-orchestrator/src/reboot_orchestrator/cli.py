@@ -7,6 +7,7 @@ handling argument parsing, error logging, and user confirmation prompts.
 
 import argparse
 import sys
+from reboot_orchestrator.boot_state import VerificationStatus
 from reboot_orchestrator.orchestrator import RebootOrchestrator, OrchestrationConfig
 
 
@@ -49,6 +50,17 @@ def main() -> None:
         help="Number of seconds to wait for VM graceful halt before forced stop (default: 15)",
     )
     parser.add_argument(
+        "--skip-boot-verification",
+        action="store_true",
+        help="Do not read boot_id/uptime over SSH to confirm hosts actually rebooted",
+    )
+    parser.add_argument(
+        "--probe-timeout-seconds",
+        type=int,
+        default=15,
+        help="Timeout in seconds for each SSH boot state probe (default: 15)",
+    )
+    parser.add_argument(
         "hosts",
         nargs="+",
         help="One or more hostnames to reboot in topologically sequenced order",
@@ -61,6 +73,8 @@ def main() -> None:
         ping_timeout=args.ping_timeout,
         wait_drop_seconds=args.wait_drop_seconds,
         zombie_halt_wait_seconds=args.zombie_halt_wait_seconds,
+        verify_boot_state=not args.skip_boot_verification,
+        probe_timeout_seconds=args.probe_timeout_seconds,
     )
 
     orchestrator = RebootOrchestrator(config)
@@ -95,9 +109,22 @@ def main() -> None:
             sys.exit(1)
 
     try:
-        orchestrator.run(target_hosts=target_hosts)
+        verifications = orchestrator.run(target_hosts=target_hosts)
     except Exception as e:
         print(f"FATAL: Reboot orchestration failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # A host proven not to have rebooted is a failed run, even though every tier
+    # completed and every host answered ping.
+    not_rebooted = [
+        r for r in verifications if r.status is VerificationStatus.NOT_REBOOTED
+    ]
+    if not_rebooted:
+        hosts = ", ".join(r.host for r in not_rebooted)
+        print(
+            f"FATAL: These hosts never rebooted: {hosts}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 

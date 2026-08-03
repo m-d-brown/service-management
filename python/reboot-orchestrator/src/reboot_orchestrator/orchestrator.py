@@ -7,6 +7,13 @@ enabling robust, dependency-aware, tiered reboot management.
 
 from dataclasses import dataclass
 from typing import Any
+from reboot_orchestrator.boot_state import (
+    BootState,
+    RebootVerification,
+    VerificationStatus,
+    capture_boot_state,
+    verify_reboot,
+)
 from reboot_orchestrator.inventory import load_inventory
 from reboot_orchestrator.ssh import reboot_hosts, execute_zombie_workaround
 from reboot_orchestrator.ping import wait_for_hosts
@@ -22,6 +29,8 @@ class OrchestrationConfig:
     ping_timeout: int = 1
     wait_drop_seconds: int = 15
     zombie_halt_wait_seconds: int = 15
+    verify_boot_state: bool = True
+    probe_timeout_seconds: int = 15
 
 
 class RebootOrchestrator:
@@ -177,7 +186,101 @@ class RebootOrchestrator:
         for i, root in enumerate(roots):
             _print_node(root, is_last=(i == len(roots) - 1))
 
-    def run(self, target_hosts: set[str]) -> None:
+    def capture_baselines(
+        self, hosts: list[str], inventory: dict[str, dict[str, Any]]
+    ) -> dict[str, BootState | None]:
+        """
+        Records the pre-reboot boot identity of each host in a tier.
+
+        Doubles as an SSH pre-flight check: a host that cannot be probed here is
+        unlikely to accept the reboot command either, so it is called out early.
+
+        Args:
+            hosts: Hostnames about to be rebooted.
+            inventory: The flattened inventory mapping of hostnames to properties.
+
+        Returns:
+            dict[str, BootState | None]: Baseline reading per host (None on failure).
+        """
+        print("Recording pre-reboot boot state...")
+        baselines: dict[str, BootState | None] = {}
+        for host in hosts:
+            state = capture_boot_state(
+                host=host,
+                inventory=inventory,
+                probe_timeout_seconds=self.config.probe_timeout_seconds,
+            )
+            if state is None:
+                print(
+                    f"  WARNING: Cannot read the boot state of '{host}' over SSH. "
+                    "The reboot command will likely fail the same way, and the "
+                    "reboot cannot be verified."
+                )
+            baselines[host] = state
+        return baselines
+
+    def verify_tier(
+        self,
+        hosts: list[str],
+        baselines: dict[str, BootState | None],
+        inventory: dict[str, dict[str, Any]],
+    ) -> list[RebootVerification]:
+        """
+        Re-reads the boot identity of each host in a tier and compares it against
+        the recorded baseline to prove the reboot happened.
+
+        Args:
+            hosts: Hostnames that were rebooted.
+            baselines: Pre-reboot readings from capture_baselines.
+            inventory: The flattened inventory mapping of hostnames to properties.
+
+        Returns:
+            list[RebootVerification]: One verdict per host, in the given order.
+        """
+        print("Verifying boot state changed...")
+        results: list[RebootVerification] = []
+        for host in hosts:
+            after = capture_boot_state(
+                host=host,
+                inventory=inventory,
+                probe_timeout_seconds=self.config.probe_timeout_seconds,
+            )
+            result = verify_reboot(host, baselines.get(host), after)
+            if result.status is VerificationStatus.CONFIRMED:
+                print(f"[✓] {host} rebooted: {result.detail}")
+            elif result.status is VerificationStatus.NOT_REBOOTED:
+                print(f"[✗] WARNING: {host} did NOT reboot: {result.detail}")
+            else:
+                print(f"[?] WARNING: {host} reboot unverified: {result.detail}")
+            results.append(result)
+        return results
+
+    def print_verification_summary(self, results: list[RebootVerification]) -> None:
+        """
+        Prints a closing report grouping hosts by verification outcome.
+
+        Args:
+            results: Every verdict produced during the run.
+        """
+        if not results:
+            return
+
+        confirmed = [r for r in results if r.status is VerificationStatus.CONFIRMED]
+        failed = [r for r in results if r.status is VerificationStatus.NOT_REBOOTED]
+        unknown = [r for r in results if r.status is VerificationStatus.UNKNOWN]
+
+        print("\n=== Reboot Verification Summary ===")
+        print(
+            f"Confirmed rebooted: {len(confirmed)}  "
+            f"Not rebooted: {len(failed)}  "
+            f"Unverified: {len(unknown)}"
+        )
+        for result in failed:
+            print(f"  [✗] {result.host}: {result.detail}")
+        for result in unknown:
+            print(f"  [?] {result.host}: {result.detail}")
+
+    def run(self, target_hosts: set[str]) -> list[RebootVerification]:
         """
         Executes the full tiered reboot orchestration workflow.
 
@@ -186,13 +289,19 @@ class RebootOrchestrator:
         3. Sorts hosts into dynamic execution tiers.
         4. Executes tiered reboots sequentially, performing pre-flight zombie VM
            interventions as needed and waiting for recovery.
+        5. Verifies each host's boot identity actually changed, warning loudly
+           when a host came back without having rebooted.
 
         Args:
             target_hosts: The set of hostnames targeted for reboot execution.
+
+        Returns:
+            list[RebootVerification]: One verdict per rebooted host. Empty when
+            verification is disabled or no hosts were targeted.
         """
         if not target_hosts:
             print("No hosts targeted for reboot.")
-            return
+            return []
 
         inventory = self.get_inventory()
         self.validate_targets(inventory, target_hosts)
@@ -200,10 +309,17 @@ class RebootOrchestrator:
         active_queue = set(target_hosts)
         tier_map = self.build_execution_tiers(active_queue, inventory)
         executed_workarounds: set[str] = set()
+        verifications: list[RebootVerification] = []
 
         for tier_num in sorted(tier_map.keys()):
             tier_hosts = tier_map[tier_num]
             print(f"\n=== Executing Tier: {tier_num} ===")
+
+            # Record the baseline before anything powers the hosts down, so that
+            # zombie VM workarounds do not race the probe.
+            baselines: dict[str, BootState | None] = {}
+            if self.config.verify_boot_state:
+                baselines = self.capture_baselines(tier_hosts, inventory)
 
             # Execute zombie VM workarounds if necessary.
             # Trigger pre-flight VM shutdowns if the VM or its hypervisor is rebooting in this tier.
@@ -243,9 +359,27 @@ class RebootOrchestrator:
                 ping_timeout=self.config.ping_timeout,
             )
 
+            # Reachability alone does not prove a reboot: confirm the boot
+            # identity changed before moving on to dependent tiers.
+            if self.config.verify_boot_state:
+                verifications.extend(self.verify_tier(tier_hosts, baselines, inventory))
+
             # Clean up queue
             for h in tier_hosts:
                 if h in active_queue:
                     active_queue.remove(h)
 
-        print("\nAll tiers complete. Reboot orchestration finished successfully.")
+        self.print_verification_summary(verifications)
+
+        unconfirmed = [
+            r for r in verifications if r.status is not VerificationStatus.CONFIRMED
+        ]
+        if unconfirmed:
+            print(
+                "\nAll tiers complete, but "
+                f"{len(unconfirmed)} host(s) could not be confirmed as rebooted."
+            )
+        else:
+            print("\nAll tiers complete. Reboot orchestration finished successfully.")
+
+        return verifications
