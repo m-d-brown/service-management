@@ -8,6 +8,12 @@ handling argument parsing, error logging, and user confirmation prompts.
 import argparse
 import sys
 from reboot_orchestrator.boot_state import VerificationStatus
+from reboot_orchestrator.detect import (
+    RebootStatus,
+    make_recheck,
+    print_report,
+    probe_hosts,
+)
 from reboot_orchestrator.orchestrator import RebootOrchestrator, OrchestrationConfig
 
 
@@ -30,6 +36,14 @@ def main() -> None:
         "-y",
         action="store_true",
         help="Bypass interactive execution confirmation",
+    )
+    parser.add_argument(
+        "--if-needed",
+        action="store_true",
+        help=(
+            "Probe the named hosts and reboot only those with a pending "
+            "reboot, instead of rebooting all of them"
+        ),
     )
     parser.add_argument(
         "--ping-timeout",
@@ -93,6 +107,25 @@ def main() -> None:
         print(f"FATAL: Pre-flight validation failed: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Hosts that could not be probed, at either the initial check or a per-tier
+    # re-check. They are excluded from the reboot set — an unprobed host is not
+    # known to need one — but they make the run exit non-zero so a caller
+    # driving this from a script notices something went unchecked.
+    unprobed: list[RebootStatus] = []
+    recheck = None
+
+    if args.if_needed:
+        statuses = probe_hosts(sorted(target_hosts), inventory)
+        print_report(statuses)
+        unprobed.extend(s for s in statuses if s.needs_reboot is None)
+        target_hosts = {s.host for s in statuses if s.needs_reboot is True}
+
+        if not target_hosts:
+            print("\nNothing to reboot.")
+            sys.exit(1 if unprobed else 0)
+
+        recheck = make_recheck(inventory, on_unprobed=unprobed.append)
+
     print(
         "\nThe following hosts will be rebooted (parents first, nested dependents last):"
     )
@@ -109,10 +142,18 @@ def main() -> None:
             sys.exit(1)
 
     try:
-        verifications = orchestrator.run(target_hosts=target_hosts)
+        verifications = orchestrator.run(target_hosts=target_hosts, recheck=recheck)
     except Exception as e:
         print(f"FATAL: Reboot orchestration failed: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Two distinct ways a run can be unsound, both fatal to the exit status: a
+    # host we could not check at all, and a host we rebooted that provably did
+    # not come back on a new boot.
+    if unprobed:
+        print("\nWARNING: these hosts could not be checked:", file=sys.stderr)
+        for status in unprobed:
+            print(f"  {status.host} — {status.reason}", file=sys.stderr)
 
     # A host proven not to have rebooted is a failed run, even though every tier
     # completed and every host answered ping.
@@ -125,6 +166,8 @@ def main() -> None:
             f"FATAL: These hosts never rebooted: {hosts}",
             file=sys.stderr,
         )
+
+    if unprobed or not_rebooted:
         sys.exit(1)
 
 

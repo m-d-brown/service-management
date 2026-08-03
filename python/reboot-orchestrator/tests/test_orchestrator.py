@@ -10,6 +10,7 @@ from reboot_orchestrator import (
     BootState,
     OrchestrationConfig,
     RebootOrchestrator,
+    RebootVerification,
     VerificationStatus,
 )
 
@@ -286,3 +287,132 @@ def test_print_dependency_tree(capsys: pytest.CaptureFixture[str]) -> None:
     assert "    │   └── app-1" in output
     assert "    └── vm-b" in output
     assert "        └── app-1 (already listed)" in output
+
+
+# The recheck scenarios below all use this shape: a hypervisor in tier 1 and two
+# guests nested under it in tier 2. Rebooting the hypervisor power-cycles both
+# guests, which is exactly when a stale pre-flight verdict would cause a
+# needless second reboot.
+NESTED_INVENTORY: dict[str, dict[str, Any]] = {
+    "hypervisor-1": {"ip_addr": "10.0.0.5"},
+    "vm-a": {"ip_addr": "10.0.0.21", "depends_on": ["hypervisor-1"]},
+    "vm-b": {"ip_addr": "10.0.0.22", "depends_on": ["hypervisor-1"]},
+}
+
+
+@patch("reboot_orchestrator.orchestrator.wait_for_hosts")
+@patch("reboot_orchestrator.orchestrator.reboot_hosts")
+@patch("reboot_orchestrator.orchestrator.load_inventory")
+def test_run_recheck_skips_hosts_the_parent_already_rebooted(
+    mock_load: MagicMock,
+    mock_reboot: MagicMock,
+    mock_wait: MagicMock,
+) -> None:
+    """
+    A guest that comes back clean after its hypervisor's reboot must be dropped
+    from its tier, not rebooted a second time. Tier 1 is never re-checked — the
+    caller's probe is still current there.
+    """
+    mock_load.return_value = NESTED_INVENTORY
+    seen: list[list[str]] = []
+
+    def recheck(hosts: list[str]) -> list[str]:
+        seen.append(list(hosts))
+        return [h for h in hosts if h == "vm-b"]
+
+    orchestrator = RebootOrchestrator(OrchestrationConfig(verify_boot_state=False))
+    orchestrator.run({"hypervisor-1", "vm-a", "vm-b"}, recheck=recheck)
+
+    # Only tier 2 was re-checked, and only as a single call for that tier.
+    assert seen == [["vm-a", "vm-b"]]
+
+    # vm-a dropped out; the hypervisor and vm-b still rebooted.
+    assert mock_reboot.call_count == 2
+    mock_reboot.assert_any_call(hosts=["hypervisor-1"], inventory=NESTED_INVENTORY)
+    mock_reboot.assert_any_call(hosts=["vm-b"], inventory=NESTED_INVENTORY)
+    assert mock_wait.call_count == 2
+
+
+@patch("reboot_orchestrator.orchestrator.wait_for_hosts")
+@patch("reboot_orchestrator.orchestrator.reboot_hosts")
+@patch("reboot_orchestrator.orchestrator.load_inventory")
+def test_run_recheck_emptied_tier_issues_no_reboot_or_wait(
+    mock_load: MagicMock,
+    mock_reboot: MagicMock,
+    mock_wait: MagicMock,
+) -> None:
+    """
+    When every host in a tier comes back clean, the tier is skipped outright —
+    no reboot, and no ping wait, because nothing went down.
+    """
+    mock_load.return_value = NESTED_INVENTORY
+
+    orchestrator = RebootOrchestrator(OrchestrationConfig(verify_boot_state=False))
+    orchestrator.run({"hypervisor-1", "vm-a", "vm-b"}, recheck=lambda hosts: [])
+
+    mock_reboot.assert_called_once_with(
+        hosts=["hypervisor-1"], inventory=NESTED_INVENTORY
+    )
+    mock_wait.assert_called_once()
+
+
+@patch("reboot_orchestrator.orchestrator.wait_for_hosts")
+@patch("reboot_orchestrator.orchestrator.reboot_hosts")
+@patch("reboot_orchestrator.orchestrator.load_inventory")
+def test_run_without_recheck_is_unchanged(
+    mock_load: MagicMock,
+    mock_reboot: MagicMock,
+    mock_wait: MagicMock,
+) -> None:
+    """Omitting recheck leaves the original every-tier-reboots behaviour intact."""
+    mock_load.return_value = NESTED_INVENTORY
+
+    orchestrator = RebootOrchestrator(OrchestrationConfig(verify_boot_state=False))
+    orchestrator.run({"hypervisor-1", "vm-a", "vm-b"})
+
+    assert mock_reboot.call_count == 2
+    mock_reboot.assert_any_call(hosts=["hypervisor-1"], inventory=NESTED_INVENTORY)
+    mock_reboot.assert_any_call(hosts=["vm-a", "vm-b"], inventory=NESTED_INVENTORY)
+    assert mock_wait.call_count == 2
+
+
+@patch("reboot_orchestrator.orchestrator.verify_reboot")
+@patch("reboot_orchestrator.orchestrator.capture_boot_state")
+@patch("reboot_orchestrator.orchestrator.wait_for_hosts")
+@patch("reboot_orchestrator.orchestrator.reboot_hosts")
+@patch("reboot_orchestrator.orchestrator.load_inventory")
+def test_recheck_skipped_hosts_are_never_verified(
+    mock_load: MagicMock,
+    mock_reboot: MagicMock,
+    mock_wait: MagicMock,
+    mock_capture: MagicMock,
+    mock_verify: MagicMock,
+) -> None:
+    """
+    A host the re-check drops was deliberately not rebooted, so it must be left
+    out of boot state verification entirely. Verifying it anyway would probe a
+    boot ID that was never going to change and report the host as having failed
+    to reboot — a false alarm about a decision the orchestrator itself made.
+    """
+    mock_load.return_value = NESTED_INVENTORY
+    mock_capture.return_value = BootState(
+        boot_id="stub", uptime_seconds=1.0, captured_at=0.0
+    )
+    mock_verify.return_value = RebootVerification(
+        host="vm-b", status=VerificationStatus.CONFIRMED, detail="boot ID changed"
+    )
+
+    orchestrator = RebootOrchestrator(OrchestrationConfig())
+    verifications = orchestrator.run(
+        {"hypervisor-1", "vm-a", "vm-b"},
+        recheck=lambda hosts: [h for h in hosts if h == "vm-b"],
+    )
+
+    # vm-a was dropped, so it is neither baselined nor re-read afterwards.
+    probed = {call.kwargs["host"] for call in mock_capture.call_args_list}
+    assert "vm-a" not in probed
+    assert {"hypervisor-1", "vm-b"} <= probed
+
+    # One verdict per host actually rebooted: the hypervisor and vm-b.
+    assert len(verifications) == 2
+    assert "vm-a" not in {call.args[0] for call in mock_verify.call_args_list}
