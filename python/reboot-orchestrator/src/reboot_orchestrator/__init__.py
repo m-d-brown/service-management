@@ -10,6 +10,13 @@ from reboot_orchestrator.orchestrator import (
     RebootOrchestrator,
     OrchestrationConfig,
 )
+from reboot_orchestrator.boot_state import (
+    BootState,
+    RebootVerification,
+    VerificationStatus,
+    capture_boot_state,
+    verify_reboot,
+)
 from reboot_orchestrator.inventory import (
     load_inventory,
 )
@@ -25,6 +32,11 @@ from reboot_orchestrator.ping import (
 __all__ = [
     "RebootOrchestrator",
     "OrchestrationConfig",
+    "BootState",
+    "RebootVerification",
+    "VerificationStatus",
+    "capture_boot_state",
+    "verify_reboot",
     "load_inventory",
     "reboot_hosts",
     "execute_zombie_workaround",

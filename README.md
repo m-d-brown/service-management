@@ -123,6 +123,12 @@ designed to orchestrate system reboots across network infrastructure.
   asynchronously so that network/connectivity drops do not hang the
   orchestrator, and asynchronously tracks host status using continuous ICMP ping
   loops to guarantee a tier is fully online before moving to the next.
+- **Boot State Verification**: Compares each host's kernel boot ID (or uptime,
+  for hosts without one) before and after the reboot, so a host that answered
+  ping without ever restarting is warned about and fails the run instead of
+  passing silently.
+- **Command Transparency**: Echoes every SSH and ping command as a
+  copy-pasteable shell line before running it.
 
 **Usage:**
 
@@ -143,21 +149,50 @@ The following hosts will be rebooted (parents first, nested dependents last):
     └── vm-a
 
 === Executing Tier: 1 ===
+Recording pre-reboot boot state...
+  Reading boot state of hypervisor-1:
+    $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
+Executing pre-flight graceful halt for 'vm-a' via SSH...
+  $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new admin@10.0.0.21 'sudo poweroff || poweroff'
+Waiting 15s for 'vm-a' to power down...
+Verifying VM state and enforcing fallback stop command on hypervisor 'hypervisor-1' via SSH...
+  $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'sudo qm stop 101 || qm stop 101'
 Issuing reboot command to: hypervisor-1
+  $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'sudo reboot || reboot'
 Waiting 15 seconds for hosts to drop off the network...
 Waiting for hypervisor-1, vm-a to return online...
-[✓] hypervisor-1 is back online!
-[✓] vm-a is back online!
+  $ ping -c 1 -W 1 10.0.0.5
+  $ ping -c 1 -W 1 10.0.0.21
+[✓] hypervisor-1 is reachable.
+[✓] vm-a is reachable.
+Verifying boot state changed...
+  Reading boot state of hypervisor-1:
+    $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
+[✓] hypervisor-1 rebooted: boot_id changed (9c2f1a44-3b7e-4d51-9f0a-1b2c3d4e5f60 -> 1d7b9e02-5a3c-4f18-8e6d-7a9b0c1d2e3f)
 
 === Executing Tier: 2 ===
-Executing pre-flight graceful halt for 'vm-a' via SSH...
-Waiting 15s for 'vm-a' to power down...
-Issuing reboot command to: vm-a
-Waiting 15 seconds for hosts to drop off the network...
-Waiting for vm-a to return online...
-[✓] vm-a is back online!
+... (vm-a follows the same probe, reboot, ping, verify sequence) ...
+[✓] vm-a rebooted: boot_id changed (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192 -> b83a5c17-6d4e-4029-9c3b-5f1a2e8d47c0)
+
+=== Reboot Verification Summary ===
+Confirmed rebooted: 2  Not rebooted: 0  Unverified: 0
 
 All tiers complete. Reboot orchestration finished successfully.
+```
+
+A host that answers ping without having actually restarted is called out and
+fails the run rather than being reported as a success:
+
+```text
+[✓] vm-a is reachable.
+Verifying boot state changed...
+[✗] WARNING: vm-a did NOT reboot: boot_id is unchanged (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192); the host never went down
+
+=== Reboot Verification Summary ===
+Confirmed rebooted: 1  Not rebooted: 1  Unverified: 0
+  [✗] vm-a: boot_id is unchanged (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192); the host never went down
+
+All tiers complete, but 1 host(s) could not be confirmed as rebooted.
 ```
 
 ### `proxmox-retrust-host-keys`
