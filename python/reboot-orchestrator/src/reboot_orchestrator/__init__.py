@@ -28,6 +28,12 @@ from reboot_orchestrator.ping import (
     ping_host,
     wait_for_hosts,
 )
+from reboot_orchestrator.detect import (
+    RebootStatus,
+    make_recheck,
+    probe_host,
+    probe_hosts,
+)
 
 __all__ = [
     "RebootOrchestrator",
@@ -42,4 +48,8 @@ __all__ = [
     "execute_zombie_workaround",
     "ping_host",
     "wait_for_hosts",
+    "RebootStatus",
+    "make_recheck",
+    "probe_host",
+    "probe_hosts",
 ]

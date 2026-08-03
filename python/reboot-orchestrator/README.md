@@ -14,6 +14,9 @@ before the systems that depend on them are touched.
 
 - **Topological Sequence (DAG)**: Dynamically groups hosts into execution tiers
   based on topological dependency sorting (Kahn's Algorithm).
+- **Pending-Reboot Detection**: With `--if-needed`, probes the named hosts over
+  SSH and reboots only those actually waiting on one, re-checking each tier as
+  it comes up so guests already power-cycled by their parent are left alone.
 - **Direct SSH Execution**: Triggers all reboots gracefully via native parallel
   SSH commands, avoiding heavy external automation runners or playbooks.
 - **ACPI "Zombie" VM Workaround**: Safely handles virtual machines suffering
@@ -130,6 +133,7 @@ reboot-orchestrator [options] host1 host2 [host3 ...]
 | ---------------------------- | --------------- | -------------------------------------------------------- |
 | `--inventory`, `-i`          | `inventory.yml` | Path to the Ansible inventory file                       |
 | `--yes`, `-y`                | `False`         | Bypass interactive confirmation prompt                   |
+| `--if-needed`                | `False`         | Reboot only the named hosts that have a pending reboot   |
 | `--ping-timeout`             | `1`             | Timeout in seconds for single ping queries               |
 | `--wait-drop-seconds`        | `15`            | Seconds to wait for hosts to drop off network            |
 | `--zombie-halt-wait-seconds` | `15`            | Seconds to wait for VM graceful halt before forced stop  |
@@ -138,10 +142,47 @@ reboot-orchestrator [options] host1 host2 [host3 ...]
 
 ### Exit Codes
 
-| Code | Meaning                                                                                        |
-| ---- | ---------------------------------------------------------------------------------------------- |
-| `0`  | All tiers completed; no host was proven to have skipped its reboot                             |
-| `1`  | Pre-flight validation failed, orchestration errored, or a host was proven not to have rebooted |
+| Code | Meaning                                                                                                              |
+| ---- | -------------------------------------------------------------------------------------------------------------------- |
+| `0`  | All tiers completed; every host was checked, and none was proven to have skipped its reboot                          |
+| `1`  | Pre-flight validation failed, orchestration errored, a host could not be checked, or a host was proven not to reboot |
+
+---
+
+## Pending-Reboot Detection
+
+By default every host named on the command line is rebooted. With `--if-needed`
+the orchestrator first probes them and reboots only those actually waiting on
+one, reporting a reason for every host either way.
+
+The probe is a single unprivileged shell script, piped to `/bin/sh` on the
+remote's standard input rather than passed as an argument — that keeps it
+working regardless of the login shell, which on FreeBSD is commonly csh. It
+branches on `uname -s`:
+
+| Platform      | Check                                                                                                      |
+| ------------- | ---------------------------------------------------------------------------------------------------------- |
+| FreeBSD       | `uname -r` (running kernel) differs from `freebsd-version -k` (installed kernel)                           |
+| Debian et al. | `/var/run/reboot-required` exists; `/var/run/reboot-required.pkgs` names the packages, when apt records it |
+
+### Re-checking as tiers advance
+
+Rebooting a parent power-cycles everything nested under it — reboot a hypervisor
+and its guests go down and come back with it. A guest's pre-flight verdict is
+therefore stale by the time its own tier is reached, and acting on it would
+reboot that guest a second time for an update its parent's reboot already
+applied.
+
+So each tier after the first is re-probed immediately before it runs. Hosts that
+now come back clean are announced and dropped, and a tier emptied that way is
+skipped outright — no reboot issued and no ping wait, because nothing went down.
+One consequence worth knowing: the dependency tree shown at the confirmation
+prompt is the plan as understood before anything has rebooted, so a host listed
+there may still be skipped later. The skip is announced when it happens.
+
+A host that cannot be probed is reported and left out of the reboot set — an
+unprobed host is never assumed up to date — and makes the process exit non-zero
+so a calling script notices something went unchecked.
 
 ---
 

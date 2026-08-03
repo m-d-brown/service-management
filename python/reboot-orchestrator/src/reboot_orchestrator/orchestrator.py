@@ -6,7 +6,7 @@ enabling robust, dependency-aware, tiered reboot management.
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Optional
 from reboot_orchestrator.boot_state import (
     BootState,
     RebootVerification,
@@ -280,7 +280,11 @@ class RebootOrchestrator:
         for result in unknown:
             print(f"  [?] {result.host}: {result.detail}")
 
-    def run(self, target_hosts: set[str]) -> list[RebootVerification]:
+    def run(
+        self,
+        target_hosts: set[str],
+        recheck: Optional[Callable[[list[str]], list[str]]] = None,
+    ) -> list[RebootVerification]:
         """
         Executes the full tiered reboot orchestration workflow.
 
@@ -294,10 +298,20 @@ class RebootOrchestrator:
 
         Args:
             target_hosts: The set of hostnames targeted for reboot execution.
+            recheck: Optional callable narrowing a tier to the hosts that still
+                     need a reboot, applied immediately before each tier after
+                     the first. Rebooting a parent power-cycles everything
+                     nested under it, so by the time a child's tier is reached
+                     its earlier verdict may no longer hold; without this the
+                     child would be rebooted a second time for an update its
+                     parent's reboot already applied. The first tier is not
+                     re-checked — nothing has gone down yet, so the caller's own
+                     probe still stands.
 
         Returns:
-            list[RebootVerification]: One verdict per rebooted host. Empty when
-            verification is disabled or no hosts were targeted.
+            list[RebootVerification]: One verdict per rebooted host — hosts the
+            re-check skipped are not included, having never been rebooted. Empty
+            when verification is disabled or no hosts were targeted.
         """
         if not target_hosts:
             print("No hosts targeted for reboot.")
@@ -311,9 +325,29 @@ class RebootOrchestrator:
         executed_workarounds: set[str] = set()
         verifications: list[RebootVerification] = []
 
-        for tier_num in sorted(tier_map.keys()):
+        for position, tier_num in enumerate(sorted(tier_map.keys())):
             tier_hosts = tier_map[tier_num]
             print(f"\n=== Executing Tier: {tier_num} ===")
+
+            # Re-check everything but the first tier: the tiers before this one
+            # have rebooted, taking their nested dependents down and back up
+            # with them, which may already have applied what these hosts were
+            # queued for. This runs before the baseline capture below so a host
+            # dropped here is never probed for a boot state it will not change,
+            # and never turns up in the verification summary as a host that
+            # failed to reboot — it was deliberately not rebooted.
+            if recheck is not None and position > 0:
+                still_pending = set(recheck(tier_hosts))
+                for host in tier_hosts:
+                    if host not in still_pending:
+                        print(f"Skipping {host}: no longer needs a reboot.")
+                tier_hosts = [h for h in tier_hosts if h in still_pending]
+
+                if not tier_hosts:
+                    print(f"Tier {tier_num} is already up to date; nothing to do.")
+                    for h in tier_map[tier_num]:
+                        active_queue.discard(h)
+                    continue
 
             # Record the baseline before anything powers the hosts down, so that
             # zombie VM workarounds do not race the probe.
@@ -360,14 +394,16 @@ class RebootOrchestrator:
             )
 
             # Reachability alone does not prove a reboot: confirm the boot
-            # identity changed before moving on to dependent tiers.
+            # identity changed before moving on to dependent tiers. Only the
+            # hosts that survived the re-check are verified — they are the only
+            # ones that were actually rebooted.
             if self.config.verify_boot_state:
                 verifications.extend(self.verify_tier(tier_hosts, baselines, inventory))
 
-            # Clean up queue
-            for h in tier_hosts:
-                if h in active_queue:
-                    active_queue.remove(h)
+            # Clean up queue. Drain the tier as originally planned, not the
+            # filtered list, so anything the re-check skipped leaves too.
+            for h in tier_map[tier_num]:
+                active_queue.discard(h)
 
         self.print_verification_summary(verifications)
 

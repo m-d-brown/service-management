@@ -36,6 +36,9 @@ reboots across network infrastructure.
 - **ACPI "Zombie" VM Workaround**: Safely handle virtual machines suffering from
   poweroff/ACPI bugs by executing pre-flight graceful halts and issuing fallback
   VM cut-power commands on the hypervisor host.
+- **Pending-Reboot Detection**: Optionally determine over SSH which of the named
+  hosts are actually waiting on a reboot, and reboot only those — re-evaluating
+  as tiers advance, since rebooting a parent power-cycles its nested guests.
 
 ## Proposed Architecture
 
@@ -131,6 +134,36 @@ Every SSH and ping invocation is echoed as a quoted, copy-pasteable shell line
 before it executes. Because the tool mutates infrastructure state through
 fire-and-forget subprocesses, an operator watching the run can see exactly what
 was attempted against which host and reproduce any step by hand.
+
+### 7. Pending-Reboot Detection (`--if-needed`)
+
+Rather than depend on a configuration management runner to decide which hosts to
+hand over, the orchestrator can determine that itself. The check is a single
+unprivileged shell script piped to `/bin/sh` on the remote's standard input —
+piped rather than passed as an argument so it is unaffected by the login shell,
+which on FreeBSD is commonly csh, and so shell quoting never enters into it. It
+branches on `uname -s`: FreeBSD compares the running kernel (`uname -r`) against
+the installed one (`freebsd-version -k`); elsewhere it tests for apt's
+`/var/run/reboot-required` flag and reads the adjacent `.pkgs` file for detail.
+
+Detection deliberately re-runs per tier rather than once up front. A parent's
+reboot power-cycles every guest nested under it, so a guest's initial verdict is
+stale by the time its tier is reached; acting on it would reboot that guest a
+second time for an update the parent's reboot already applied. Each tier after
+the first is therefore re-probed immediately before executing, hosts that now
+report clean are dropped, and a tier emptied that way is skipped without a
+reboot or a ping wait. Re-probing is safe at that moment because the preceding
+tier already waited for its hosts _and their dependents_ to answer ping again.
+
+A host that cannot be probed resolves to a third state, distinct from "up to
+date": it is excluded from the reboot set and reported, and the process exits
+non-zero so a calling script cannot mistake an unchecked host for a healthy one.
+
+The per-tier re-check runs ahead of the boot state baseline described in section
+5, and the two compose deliberately: a host dropped by the re-check is never
+rebooted, so it is neither probed for a baseline it would not change nor listed
+in the verification summary as a host that failed to reboot. Verification covers
+exactly the hosts the orchestrator actually acted on.
 
 ---
 
