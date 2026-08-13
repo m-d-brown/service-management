@@ -285,6 +285,19 @@ task check
 Our GitHub Actions CI pipeline will automatically run these same checks on all
 pull requests to ensure nothing slips through.
 
+### Dev container (optional)
+
+If you would rather not install the toolchain on your machine, this repository
+ships a [dev container](https://containers.dev/). Open the repo in VS Code and
+choose _Reopen in Container_, or run `devcontainer up --workspace-folder .`.
+
+It provisions Go, Python, `uv`, `task`, `golangci-lint` and `pre-commit` at the
+versions read from `go/go.mod`, `.python-version` and `mise.toml`, runs
+`task setup` for you, and points the editor at the same linters and formatters
+`task check` uses. Nothing is pinned in `.devcontainer/`, so a version bump
+needs no change there — rebuild the container, or re-run
+`./.devcontainer/post-create.sh` in place.
+
 ## Development
 
 We use [Task](https://taskfile.dev/) as our build tool. Use `task` at the root
