@@ -14,6 +14,12 @@
   // extensions don't start against a half-provisioned container.
   "waitFor": "postCreateCommand",
 
+  // Claude Code's login and history are the one piece of container state worth
+  // keeping; everything else is rebuilt from the repo's version files.
+  "mounts": [
+    "source=service-management-claude,target=/home/vscode/.claude,type=volume"
+  ],
+
   "containerEnv": {
     // Keep the project virtualenv out of the bind-mounted workspace: a .venv
     // built on the host is unusable here (and vice versa), so the two must not
@@ -30,7 +36,8 @@
         "charliermarsh.ruff",
         "ms-python.mypy-type-checker",
         "DavidAnson.vscode-markdownlint",
-        "esbenp.prettier-vscode"
+        "esbenp.prettier-vscode",
+        "anthropic.claude-code"
       ],
       "settings": {
         "editor.formatOnSave": true,
