@@ -37,11 +37,11 @@ jobs:
     name: Check (Format, Lint, Scan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Pre-commit hooks require Go to be installed (for golangci-lint)
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           # Read the Go version from go.mod so we never drift between
           # local development and CI.
@@ -57,7 +57,7 @@ jobs:
 
       # Pre-commit itself and Ruff/Mypy require Python
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           # Read the Python version from .python-version so it stays in
           # sync with pyenv and local tooling automatically.
@@ -69,7 +69,7 @@ jobs:
       # the Python tooling, task is our command runner, and golangci-lint is
       # required on PATH by the pre-commit hook (language: system).
       - name: Install tools via mise
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
 
       # Pre-commit must be installed in the CI environment via pip
       - name: Install pre-commit
@@ -89,24 +89,24 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
       # Python is needed for the Python test suite (uv run pytest).
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version-file: .python-version
 
       # Install task and uv (and the rest of mise.toml) so CI uses the same
       # runner and toolchain as local development.
       - name: Install tools via mise
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
 
       # Run the full test suite (Go + Python). go.mod tidiness is verified by
       # the check job via `task check`.
