@@ -20,6 +20,17 @@ mise install --yes
 # restating it here.
 mise use --global --yes "go@$(awk '$1 == "go" { print $2; exit }' go/go.mod)"
 
+# A shim resolves its version from whatever mise config is in scope, and the
+# repo's tools are named only by the repo's own mise.toml. A process started
+# outside the workspace — an editor extension, a terminal opened in $HOME —
+# therefore gets "No version is set for shim: uv" and an invitation to install
+# it. Repeat whatever the repo asked for as the container's global default so
+# the tools answer from any directory. Inside the workspace mise.toml still
+# wins, so this cannot drift from what the repo (and CI) specify.
+mise ls --current --installed --json |
+    jq -r 'to_entries[] | "\(.key)@\(.value[0].requested_version)"' |
+    xargs -r mise use --global --yes
+
 # task setup runs `pre-commit install`, so pre-commit has to exist first. Its
 # own isolated environment keeps it out of the project's virtualenv.
 uv tool install pre-commit

@@ -16,3 +16,9 @@ ENV PATH=/home/vscode/.local/share/mise/shims:/home/vscode/.local/bin:$PATH
 RUN curl -fsSL https://mise.run | sh \
     && echo 'eval "$(mise activate bash)"' >> ~/.bashrc \
     && echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
+
+# Claude Code, installed the same way: a single binary in ~/.local/bin. The
+# ~/.claude directory is created here rather than by the volume mounted over it,
+# so the volume inherits this ownership instead of being created by root.
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && mkdir -p ~/.claude
