@@ -26,22 +26,84 @@ func TestParseSpecBareName(t *testing.T) {
 
 func TestParseSpecAllFields(t *testing.T) {
 	host, err := ParseSpec(
-		"vm-a,addr=10.0.0.21,user=admin,ssh-arg=-4,ssh-arg=-C,after=hv1,after=dns1")
+		"vm-a,addr=10.0.0.21,user=admin,ssh-arg=-4,ssh-arg=-C,after=hv1,after=dns1," +
+			"force-off=hv1:qm stop 101")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := Host{
-		Name:    "vm-a",
-		Addr:    "10.0.0.21",
-		User:    "admin",
-		SSHArgs: []string{"-4", "-C"},
-		After:   []string{"hv1", "dns1"},
+		Name:     "vm-a",
+		Addr:     "10.0.0.21",
+		User:     "admin",
+		SSHArgs:  []string{"-4", "-C"},
+		After:    []string{"hv1", "dns1"},
+		ForceOff: ForceOff{Via: "hv1", Command: "qm stop 101"},
 	}
 	if !reflect.DeepEqual(host, want) {
 		t.Errorf("ParseSpec() = %+v, want %+v", host, want)
 	}
 	if host.Target() != "10.0.0.21" {
 		t.Errorf("Target() = %q, want 10.0.0.21", host.Target())
+	}
+	if !host.HasForceOff() {
+		t.Error("HasForceOff() = false, want true")
+	}
+}
+
+func TestParseSpecForceOff(t *testing.T) {
+	tests := []struct {
+		name string
+		spec string
+		want ForceOff
+	}{
+		{
+			// The command is arbitrary: nothing about Proxmox, or about
+			// virtualisation at all, is built into the field.
+			name: "libvirt",
+			spec: "vm-a,force-off=kvm1:virsh destroy vm-a",
+			want: ForceOff{Via: "kvm1", Command: "virsh destroy vm-a"},
+		},
+		{
+			// Only the first colon separates, so a command may contain more.
+			name: "command containing colons",
+			spec: "vm-a,force-off=pdu1:pdu outlet off port=3:immediate",
+			want: ForceOff{Via: "pdu1", Command: "pdu outlet off port=3:immediate"},
+		},
+		{
+			name: "sudo is the operator's to supply",
+			spec: "vm-a,force-off=hv1:sudo qm stop 101",
+			want: ForceOff{Via: "hv1", Command: "sudo qm stop 101"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, err := ParseSpec(tt.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if host.ForceOff != tt.want {
+				t.Errorf("ForceOff = %+v, want %+v", host.ForceOff, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseSpecForceOffErrors(t *testing.T) {
+	tests := []struct{ name, spec string }{
+		{"no separator", "vm-a,force-off=hv1"},
+		{"no command", "vm-a,force-off=hv1:"},
+		{"no delegate", "vm-a,force-off=:qm stop 101"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseSpec(tt.spec)
+			if err == nil {
+				t.Fatalf("ParseSpec(%q) succeeded, want error", tt.spec)
+			}
+			if !strings.Contains(err.Error(), "force-off must be HOST:COMMAND") {
+				t.Errorf("error = %q, want it to explain the expected shape", err)
+			}
+		})
 	}
 }
 
@@ -118,11 +180,12 @@ func TestParseSpecQuoting(t *testing.T) {
 
 func TestFormatSpecRoundTrip(t *testing.T) {
 	original := Host{
-		Name:    "vm-a",
-		Addr:    "10.0.0.21",
-		User:    "admin",
-		SSHArgs: []string{"-o", "Ciphers=aes128-ctr,aes256-ctr", `back\slash`, `quo"te`},
-		After:   []string{"hv1", "dns1"},
+		Name:     "vm-a",
+		Addr:     "10.0.0.21",
+		User:     "admin",
+		SSHArgs:  []string{"-o", "Ciphers=aes128-ctr,aes256-ctr", `back\slash`, `quo"te`},
+		After:    []string{"hv1", "dns1"},
+		ForceOff: ForceOff{Via: "hv1", Command: "qm stop 101, then log it"},
 	}
 	spec := FormatSpec(original)
 	parsed, err := ParseSpec(spec)

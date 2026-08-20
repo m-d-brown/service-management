@@ -11,10 +11,11 @@ import (
 
 // Spec field keys, as they appear in a host spec.
 const (
-	keyAddr   = "addr"
-	keyUser   = "user"
-	keySSHArg = "ssh-arg"
-	keyAfter  = "after"
+	keyAddr     = "addr"
+	keyUser     = "user"
+	keySSHArg   = "ssh-arg"
+	keyAfter    = "after"
+	keyForceOff = "force-off"
 )
 
 // ParseSpec parses one host spec.
@@ -23,7 +24,7 @@ const (
 //
 //	web1
 //	web1,addr=10.0.0.4,user=admin,after=hypervisor-1
-//	vm-a,after=hv1,after=gateway
+//	vm-a,after=hv1,force-off=hv1:qm stop 101
 //
 // The after and ssh-arg keys may repeat. A spec is a CSV record, so a value
 // containing a comma is written as a quoted field:
@@ -77,6 +78,12 @@ func hostFromFields(fields []string) (Host, error) {
 			host.SSHArgs = append(host.SSHArgs, value)
 		case keyAfter:
 			host.After = append(host.After, value)
+		case keyForceOff:
+			forceOff, err := parseForceOff(host.Name, value)
+			if err != nil {
+				return Host{}, err
+			}
+			host.ForceOff = forceOff
 		default:
 			return Host{}, fmt.Errorf("host %q: unknown field %q", host.Name, key)
 		}
@@ -102,6 +109,9 @@ func FormatSpec(h Host) string {
 	for _, after := range h.After {
 		add(keyAfter, after)
 	}
+	if h.HasForceOff() {
+		add(keyForceOff, h.ForceOff.Via+forceOffSeparator+h.ForceOff.Command)
+	}
 
 	var buf strings.Builder
 	writer := csv.NewWriter(&buf)
@@ -109,6 +119,24 @@ func FormatSpec(h Host) string {
 	_ = writer.Write(fields)
 	writer.Flush()
 	return strings.TrimRight(buf.String(), "\r\n")
+}
+
+// forceOffSeparator divides the delegate host from the command in a force-off
+// value. It reads the way scp and rsync targets do — the host, then what to do
+// on it — which is the closest existing convention to what this expresses.
+const forceOffSeparator = ":"
+
+// parseForceOff parses a HOST:COMMAND force-off value. The split is at the
+// first separator, so a command may contain further colons.
+func parseForceOff(hostName, value string) (ForceOff, error) {
+	via, command, ok := strings.Cut(value, forceOffSeparator)
+	via, command = strings.TrimSpace(via), strings.TrimSpace(command)
+	if !ok || via == "" || command == "" {
+		return ForceOff{}, fmt.Errorf(
+			"host %q: force-off must be HOST%sCOMMAND, as in %q, but is %q",
+			hostName, forceOffSeparator, "hv1:qm stop 101", value)
+	}
+	return ForceOff{Via: via, Command: command}, nil
 }
 
 // splitFields splits a spec into its comma-separated fields.

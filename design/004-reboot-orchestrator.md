@@ -27,6 +27,10 @@ network infrastructure.
 - **Direct, Zero-Dependency Execution**: Perform all state changes directly
   using native, parallelized SSH subprocess calls instead of calling external
   Ansible playbooks or runner engines.
+- **Force-Off for Hosts That Hang**: Safely handle machines that fail to
+  complete an ACPI power off by halting them gracefully and then cutting their
+  power from elsewhere, without building any particular hypervisor into the
+  tool.
 - **Reachability and State Verification**: Track system online/offline
   transitions using ICMP ping loops to guarantee a tier is fully online before
   moving to the next.
@@ -50,6 +54,7 @@ graph TD
     Plan -->|Build dependency graph| Graph[Kahn's Topological Sort]
     Graph -->|Construct tiers| Executor[Tiered Executor]
     Executor -->|Parallel direct SSH reboot| Targets[(Target Systems)]
+    Executor -->|Graceful halt, then force-off command| Delegate[(Force-Off Delegates)]
     Executor -->|ICMP ping tracking| Ping[Ping Reachability Monitor]
     Executor -->|boot_id/uptime probe before and after| Verifier[Boot State Verifier]
 ```
@@ -59,12 +64,13 @@ graph TD
 A host spec is a host name followed by optional comma-separated `key=value`
 fields, given as a command line argument or a line on standard input:
 
-| Field     | Meaning                                               |
-| --------- | ----------------------------------------------------- |
-| `addr`    | Address to ping and SSH to; defaults to the host name |
-| `user`    | SSH login user; defaults to the `--user` flag         |
-| `ssh-arg` | Extra `ssh` argument; repeatable                      |
-| `after`   | Host that must be back online first; repeatable       |
+| Field       | Meaning                                               |
+| ----------- | ----------------------------------------------------- |
+| `addr`      | Address to ping and SSH to; defaults to the host name |
+| `user`      | SSH login user; defaults to the `--user` flag         |
+| `ssh-arg`   | Extra `ssh` argument; repeatable                      |
+| `after`     | Host that must be back online first; repeatable       |
+| `force-off` | `HOST:COMMAND` to cut this host's power if it hangs   |
 
 Specs are parsed as CSV records, so a value containing the delimiter is written
 as a quoted field (`web1,"ssh-arg=-oCiphers=aes128-ctr,aes256-ctr"`) rather than
@@ -86,8 +92,8 @@ host they sit behind goes down.
 
 `ansible-inventory-reboot-hosts` converts an Ansible YAML inventory into host
 specs on stdout, reading `ip_addr`/`ansible_host`, `ansible_user`,
-`ansible_ssh_common_args`, and `depends_on`. Groups nest through `children`, and
-a host in several groups accumulates variables from all of them.
+`ansible_ssh_common_args`, `depends_on`, and `force_off`. Groups nest through
+`children`, and a host in several groups accumulates variables from all of them.
 
 The two commands are joined by a pipe:
 
@@ -128,6 +134,11 @@ the reason `ssh-arg` values are literal `ssh` arguments.
 - **Parallel Reboots**: Reboots in each tier are dispatched concurrently in the
   background running `sudo reboot || reboot`, to prevent connection drops from
   blocking the orchestrator.
+- **Force-Off**: A host declaring `force-off` is halted gracefully, given
+  `--force-off-wait`, and then powered down by running its command on the
+  delegate. The command runs verbatim rather than being wrapped in the
+  `sudo X || X` pattern used for the tool's own commands: it belongs to the
+  operator, and this tool cannot know whether the delegate's CLI wants sudo.
 
 ### 5. ICMP Reachability Monitoring
 
@@ -153,7 +164,7 @@ restarted quickly. Each tier is therefore bracketed by a boot identity probe.
   that expose no boot ID (busybox-based firmware, network appliances). Both are
   read in a single POSIX-shell command over SSH.
 - **Baseline timing**: The pre-reboot probe runs at the top of the tier, before
-  any host in it is told to reboot, so the reboot cannot race the probe.
+  any host is told to reboot or forced off, so neither can race the probe.
 - **Comparison**: A changed boot ID confirms the reboot. Without a boot ID, an
   uptime that dropped below its previous value, or below the elapsed wall-clock
   window between the two readings, confirms it. An unchanged boot ID or an
@@ -243,10 +254,37 @@ Reading the boot identity from the host after it returns measures the outcome
 that actually matters — whether the kernel restarted — rather than whether a
 command was accepted.
 
+### 4. A Command and a Delegate, Not a Hypervisor Integration
+
+Handling hosts that hang on power off needs two things: something that can cut
+the power, and the way to ask it to. An earlier form of this feature hard-wired
+both, taking a Proxmox VM ID and building `qm stop <vmid>` from it. That put a
+specific hypervisor's CLI inside a tool that otherwise knows nothing about
+virtualisation, and left every other environment — LXC containers on the same
+Proxmox host, libvirt, a switched PDU in front of a bare metal machine —
+unserved despite having exactly the same problem and an equally simple answer.
+
+Taking the command itself instead makes the feature indifferent to what is
+underneath it. `force-off=hv1:qm stop 101` and
+`force-off=kvm1:virsh destroy vm-a` are the same feature, and the tool needs no
+release to support the next environment. It also collapses two coupled fields
+into one that reads as a sentence: force this host off, via `hv1`, by running
+`qm stop 101`. The `HOST:COMMAND` shape is borrowed from `scp` and `rsync`,
+where a colon has meant "on that host, this thing" for decades.
+
+The cost is that a malformed command is only discovered when it runs. That is
+the same trade already made for `ssh-arg` and for the reboot commands
+themselves, and the alternative — validating commands this tool does not own —
+is not one it can honour.
+
 ---
 
 ## Known Limitations
 
+- **A force-off command is trusted, not checked.** It is run verbatim on the
+  delegate, so a typo fails at the moment the power needed cutting. Its output
+  is echoed and its failure warned about, but the run continues, since a host
+  that shut down cleanly also makes the command fail.
 - **`ping -W` assumes iputils semantics**, where the flag is a timeout in whole
   seconds. On BSD and macOS the same flag means milliseconds, so a run driven
   from those platforms polls faster than configured.

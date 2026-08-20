@@ -121,6 +121,11 @@ SSH, and proves each one actually restarted.
   an existing inventory.
 - **Direct SSH Execution**: Triggers all reboots gracefully via parallel SSH
   commands, avoiding heavy external automation runners or playbooks.
+- **Force-Off for Hosts That Hang**: For machines with broken ACPI power off —
+  typically virtual guests that halt their filesystems and then never finish
+  powering down, stalling the hypervisor's own reboot — runs a graceful halt,
+  waits, and then cuts the power with a command of your choosing on a host of
+  your choosing.
 - **Asynchronous Reboots & Ping Tracking**: Dispatches reboot triggers
   asynchronously so that network/connectivity drops do not hang the
   orchestrator, and asynchronously tracks host status using continuous ICMP ping
@@ -155,12 +160,13 @@ pair and wins: `--user` supplies the login user only for hosts whose spec has no
 
 **Host spec fields** (written inside a `HOST_SPEC`, no dashes):
 
-| Field     | Meaning                                                              |
-| --------- | -------------------------------------------------------------------- |
-| `addr`    | Address to ping and SSH to (default: the host name)                  |
-| `user`    | SSH login user (default: `--user`)                                   |
-| `ssh-arg` | Extra `ssh` argument; repeatable                                     |
-| `after`   | Reboot this host only once the named host is back online; repeatable |
+| Field       | Meaning                                                                                      |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| `addr`      | Address to ping and SSH to (default: the host name)                                          |
+| `user`      | SSH login user (default: `--user`)                                                           |
+| `ssh-arg`   | Extra `ssh` argument; repeatable                                                             |
+| `after`     | Reboot this host only once the named host is back online; repeatable                         |
+| `force-off` | `HOST:COMMAND` that cuts this host's power from elsewhere if it hangs on poweroff; see below |
 
 Describing a small fleet entirely on the command line:
 
@@ -169,6 +175,44 @@ reboot-orchestrator --user ops \
     hypervisor-1,addr=10.0.0.5 \
     vm-a,addr=10.0.0.21,user=admin,after=hypervisor-1
 ```
+
+**`force-off`: hosts that hang instead of powering off.** Some machines — most
+often virtual guests with a broken ACPI implementation — halt their filesystems
+and then never finish powering down. From the outside they still look like they
+are running, so anything waiting for them to stop waits in vain: a hypervisor
+rebooting underneath such a guest sits on its shutdown timeout before giving up.
+
+You want `force-off` on a host if rebooting the machine underneath it regularly
+stalls for a minute or more, or if you routinely stop that guest by hand from
+the hypervisor after a `poweroff` that looked like it worked. Hosts that power
+themselves down cleanly do not need the field, and leaving it off is the right
+default.
+
+The value names two things, joined by a colon the way `scp` and `rsync` write a
+host and a path: the **delegate** — some other host that is able to cut this
+one's power — and the **command** to run there.
+
+```shell
+reboot-orchestrator \
+    hypervisor-1,addr=10.0.0.5 \
+    vm-a,addr=10.0.0.21,after=hypervisor-1,"force-off=hypervisor-1:qm stop 101"
+```
+
+The quotes there are the shell's, not this tool's: the command contains a space,
+and without them the shell would split the spec into two arguments.
+
+The command is yours and runs verbatim on the delegate, over the same SSH path
+as everything else — `qm stop 101` for a Proxmox VM, `pct stop 105` for a
+Proxmox container, `virsh destroy vm-a` on libvirt, or whatever a switched PDU's
+CLI wants. Include `sudo` if the delegate's login user needs it. Nothing about
+any hypervisor is built in, so a kind this repo has never heard of needs no code
+to support.
+
+The order is always halt first, cut second: the host is asked to power off
+gracefully and given `--force-off-wait` to act on it, so filesystems are flushed
+in the ordinary way, and only then does the delegate command run. A host is
+forced off whether or not it is itself a reboot target, since a hung guest
+stalls its hypervisor either way.
 
 Specs also arrive on stdin, one per line — a pipe is detected automatically, or
 name a file with `--hosts-from`. Hosts read that way are **context**: they can
@@ -188,18 +232,19 @@ ansible-inventory-reboot-hosts -i inventory.yml | reboot-orchestrator --all --if
 
 **Flags** (apply to the whole run):
 
-| Flag                       | Default | Description                                            |
-| -------------------------- | ------- | ------------------------------------------------------ |
-| `--user`                   |         | SSH user for hosts that do not set one themselves      |
-| `--ssh-arg`                |         | Extra argument for every `ssh` invocation (repeatable) |
-| `--hosts-from`             |         | Read host specs from this file (`-` for stdin)         |
-| `--all`                    | `false` | Target every host read from stdin or `--hosts-from`    |
-| `--yes`, `-y`              | `false` | Bypass the interactive confirmation prompt             |
-| `--if-needed`              | `false` | Reboot only the targeted hosts with a pending reboot   |
-| `--ping-timeout`           | `1s`    | Timeout for a single ping query                        |
-| `--wait-drop`              | `15s`   | How long to wait for hosts to drop off the network     |
-| `--probe-timeout`          | `15s`   | Timeout for each SSH boot state probe                  |
-| `--skip-boot-verification` | `false` | Skip the SSH check that proves hosts rebooted          |
+| Flag                       | Default | Description                                               |
+| -------------------------- | ------- | --------------------------------------------------------- |
+| `--user`                   |         | SSH user for hosts that do not set one themselves         |
+| `--ssh-arg`                |         | Extra argument for every `ssh` invocation (repeatable)    |
+| `--hosts-from`             |         | Read host specs from this file (`-` for stdin)            |
+| `--all`                    | `false` | Target every host read from stdin or `--hosts-from`       |
+| `--yes`, `-y`              | `false` | Bypass the interactive confirmation prompt                |
+| `--if-needed`              | `false` | Reboot only the targeted hosts with a pending reboot      |
+| `--ping-timeout`           | `1s`    | Timeout for a single ping query                           |
+| `--wait-drop`              | `15s`   | How long to wait for hosts to drop off the network        |
+| `--force-off-wait`         | `15s`   | Grace period for a halt before the force-off command runs |
+| `--probe-timeout`          | `15s`   | Timeout for each SSH boot state probe                     |
+| `--skip-boot-verification` | `false` | Skip the SSH check that proves hosts rebooted             |
 
 Exit status is `0` when every tier completed, every host was checked, and none
 was proven to have skipped its reboot; `1` otherwise.
@@ -276,6 +321,11 @@ write by hand.
 | `ansible_user`              | `user`                       |
 | `ansible_ssh_common_args`   | one `ssh-arg` per shell word |
 | `depends_on`                | one `after` per entry        |
+| `force_off`                 | `force-off`                  |
+
+A `force_off` is a mapping of `delegate_to` (the host to run the command on) and
+`command` (what to run there); see [`reboot-orchestrator`](#reboot-orchestrator)
+above for when a host needs one.
 
 Groups nest arbitrarily deep through `children`, and a host appearing in several
 groups accumulates the variables from all of them. Dependencies are validated
@@ -300,6 +350,9 @@ all:
           ansible_user: admin
           ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
           depends_on: [hypervisor-1]
+          force_off:
+            delegate_to: hypervisor-1
+            command: qm stop 101
         vm-b:
           ip_addr: 10.0.0.22
           depends_on: [hypervisor-1]
@@ -327,7 +380,7 @@ ansible-inventory-reboot-hosts [--inventory FILE] | reboot-orchestrator [flags] 
 ```text
 $ ansible-inventory-reboot-hosts -i inventory.yml
 hypervisor-1,addr=10.0.0.5,user=root
-vm-a,addr=10.0.0.21,user=admin,ssh-arg=-o,ssh-arg=StrictHostKeyChecking=no,after=hypervisor-1
+vm-a,addr=10.0.0.21,user=admin,ssh-arg=-o,ssh-arg=StrictHostKeyChecking=no,after=hypervisor-1,force-off=hypervisor-1:qm stop 101
 vm-b,addr=10.0.0.22,after=hypervisor-1
 web1,addr=10.0.0.30,after=vm-a,after=vm-b
 ```

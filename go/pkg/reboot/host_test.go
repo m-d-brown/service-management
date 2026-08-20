@@ -46,6 +46,14 @@ func TestMerge(t *testing.T) {
 			overlay: Host{Name: "vm-a", After: []string{"dns1"}},
 			want:    Host{Name: "vm-a", Addr: "10.0.0.21", User: "admin", After: []string{"dns1"}},
 		},
+		{
+			name:    "force-off is carried over",
+			overlay: Host{Name: "vm-a", ForceOff: ForceOff{Via: "hv1", Command: "qm stop 101"}},
+			want: Host{
+				Name: "vm-a", Addr: "10.0.0.21", User: "admin", After: []string{"hv1"},
+				ForceOff: ForceOff{Via: "hv1", Command: "qm stop 101"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -94,6 +102,18 @@ func TestHostsValidate(t *testing.T) {
 			hosts: Hosts{"vm-a": {Name: "vm-a", After: []string{"vm-a"}}},
 			want:  "cannot reboot after itself",
 		},
+		{
+			name:  "unknown force-off delegate",
+			hosts: Hosts{"vm-a": {Name: "vm-a", ForceOff: ForceOff{Via: "ghost", Command: "stop"}}},
+			want:  `is forced off via "ghost", which is not a known host`,
+		},
+		{
+			// A host hung on power off cannot run the command that cuts its
+			// own power.
+			name:  "self force-off",
+			hosts: Hosts{"vm-a": {Name: "vm-a", ForceOff: ForceOff{Via: "vm-a", Command: "stop"}}},
+			want:  "cannot force itself off",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -109,7 +129,7 @@ func TestHostsValidate(t *testing.T) {
 
 	valid := Hosts{
 		"hv1":  {Name: "hv1"},
-		"vm-a": {Name: "vm-a", After: []string{"hv1"}},
+		"vm-a": {Name: "vm-a", After: []string{"hv1"}, ForceOff: ForceOff{Via: "hv1", Command: "qm stop 101"}},
 	}
 	if err := valid.Validate(); err != nil {
 		t.Errorf("Validate() on a sound topology: %v", err)

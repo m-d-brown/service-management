@@ -25,6 +25,9 @@ all:
           ip_addr: 10.0.0.21
           depends_on:
             - hv1
+          force_off:
+            delegate_to: hv1
+            command: qm stop 101
       children:
         services:
           hosts:
@@ -39,7 +42,10 @@ all:
 
 	want := []reboot.Host{
 		{Name: "hv1", Addr: "10.0.0.5", User: "root"},
-		{Name: "vm-a", Addr: "10.0.0.21", After: []string{"hv1"}},
+		{
+			Name: "vm-a", Addr: "10.0.0.21", After: []string{"hv1"},
+			ForceOff: reboot.ForceOff{Via: "hv1", Command: "qm stop 101"},
+		},
 		{Name: "web1", Addr: "10.0.0.30", After: []string{"vm-a"}},
 	}
 	if !reflect.DeepEqual(hosts, want) {
@@ -186,6 +192,16 @@ func TestParseErrors(t *testing.T) {
 			want:      `depends on "ghost"`,
 		},
 		{
+			name:      "force_off delegate that does not exist",
+			inventory: "all:\n  hosts:\n    vm-a:\n      force_off:\n        delegate_to: ghost\n        command: qm stop 101\n",
+			want:      `is forced off via "ghost"`,
+		},
+		{
+			name:      "incomplete force_off",
+			inventory: "all:\n  hosts:\n    vm-a:\n      force_off:\n        command: qm stop 101\n",
+			want:      "needs both delegate_to and command",
+		},
+		{
 			name:      "depends_on is not a list",
 			inventory: "all:\n  hosts:\n    web1:\n      depends_on: hv1\n",
 			want:      "invalid inventory YAML",
@@ -222,6 +238,9 @@ all:
       ip_addr: 10.0.0.21
       ansible_ssh_common_args: -o StrictHostKeyChecking=no
       depends_on: [hv1]
+      force_off:
+        delegate_to: hv1
+        command: qm stop 101
 `
 	hosts, err := Parse([]byte(inventory))
 	if err != nil {

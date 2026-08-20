@@ -15,6 +15,9 @@ type Config struct {
 	// DropWait is how long to let hosts fall off the network before polling
 	// for their return.
 	DropWait time.Duration
+	// ForceOffWait is how long a host gets to halt gracefully before its
+	// force-off command is run.
+	ForceOffWait time.Duration
 	// ProbeTimeout bounds a single SSH boot state probe.
 	ProbeTimeout time.Duration
 	// VerifyBootState reads boot identity before and after each tier to prove
@@ -126,6 +129,10 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 		return result, err
 	}
 
+	// Hosts already forced off. A host qualifies when its own tier runs and
+	// again when its delegate's does, but must only be power cycled once.
+	forced := map[string]bool{}
+
 	for position, tier := range tiers {
 		report(o.Out, "\n=== Executing Tier: %d ===\n", position+1)
 
@@ -150,13 +157,19 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 		}
 
 		tierHosts := plan.hostsFor(tierNames)
+		inTier := map[string]bool{}
+		for _, name := range tierNames {
+			inTier[name] = true
+		}
 
-		// Record the baseline before anything is rebooted, so the reboot cannot
-		// race the probe.
+		// Record the baseline before anything powers a host down, so neither the
+		// reboot nor a force-off can race the probe.
 		var baselines map[string]*BootState
 		if o.Config.VerifyBootState {
 			baselines = o.captureBaselines(ctx, tierHosts)
 		}
+
+		o.forceOffHosts(ctx, plan, forced, inTier)
 
 		RebootHosts(o.Out, o.Runner, tierHosts)
 
@@ -174,6 +187,28 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 
 	o.printSummary(result.Verifications)
 	return result, nil
+}
+
+// forceOffHosts powers down the hosts that cannot be trusted to power
+// themselves off, whether the host itself or its delegate is in this tier.
+//
+// Every known host is considered, not only the targeted ones. A guest that is
+// context-only still goes down when the hypervisor under it reboots, so leaving
+// it out would let it hang exactly the shutdown this exists to protect — and
+// forcing it off takes nothing down that was not already going down.
+func (o *Orchestrator) forceOffHosts(ctx context.Context, plan Plan, forced, inTier map[string]bool) {
+	for _, name := range plan.Hosts.Names() {
+		host := plan.Hosts[name]
+		if forced[name] || !host.HasForceOff() {
+			continue
+		}
+		if !inTier[name] && !inTier[host.ForceOff.Via] {
+			continue
+		}
+		ForceHostOff(ctx, o.Out, o.Runner, o.Clock,
+			host, plan.Hosts[host.ForceOff.Via], o.Config.ForceOffWait)
+		forced[name] = true
+	}
 }
 
 // waitList returns the tier plus every host that sits behind one of its
