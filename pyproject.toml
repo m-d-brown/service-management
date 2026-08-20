@@ -6,4 +6,8 @@ requires-python = ">=3.10"
 
 [tool.uv]
 package = false
-workspace = { members = ["python/reboot-orchestrator"] }
+# No Python packages at present: the tools in this repository are Go. Python
+# stays provisioned because the lint toolchain (pre-commit, and the ruff and
+# mypy hooks it would drive) is written in it, so a future Python package needs
+# only a workspace member added back here.
+workspace = { members = [] }

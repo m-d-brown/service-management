@@ -48,37 +48,10 @@ repos:
         types: [go]
         pass_filenames: false
 
-      # Ruff (lint + autofix), pinned by uv.lock. Run from the package dir so
-      # uv resolves the member's dev dependency group.
-      - id: ruff-check
-        name: ruff check
-        entry:
-          bash -c 'cd python/reboot-orchestrator && uv run ruff check --fix src/
-          tests/'
-        language: system
-        types: [python]
-        pass_filenames: false
-
-      # Ruff formatter (replaces black), pinned by uv.lock.
-      - id: ruff-format
-        name: ruff format
-        entry:
-          bash -c 'cd python/reboot-orchestrator && uv run ruff format src/
-          tests/'
-        language: system
-        types: [python]
-        pass_filenames: false
-
-      # mypy static type checking against the real (uv-synced) dependencies,
-      # pinned by uv.lock.
-      - id: mypy
-        name: mypy
-        entry:
-          bash -c 'cd python/reboot-orchestrator && uv run mypy
-          --ignore-missing-imports src/ tests/'
-        language: system
-        types: [python]
-        pass_filenames: false
+      # The Python hooks (ruff check, ruff format, mypy) were removed along with
+      # the last Python package. Re-add them next to the package that needs
+      # them, run from its directory so uv resolves that member's dev
+      # dependency group.
 
   # ----------------------------------------------------------------------------
   # MARKDOWN LINTING

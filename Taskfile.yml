@@ -21,6 +21,9 @@ tasks:
         ./cmd/update-container-manifest
       - go -C go build -o bin/proxmox-retrust-host-keys
         ./cmd/proxmox-retrust-host-keys
+      - go -C go build -o bin/reboot-orchestrator ./cmd/reboot-orchestrator
+      - go -C go build -o bin/ansible-inventory-reboot-hosts
+        ./cmd/ansible-inventory-reboot-hosts
 
   install:
     desc: Install binaries to GOBIN
@@ -28,12 +31,13 @@ tasks:
       - go -C go install ./cmd/container-version-snapshot
       - go -C go install ./cmd/update-container-manifest
       - go -C go install ./cmd/proxmox-retrust-host-keys
+      - go -C go install ./cmd/reboot-orchestrator
+      - go -C go install ./cmd/ansible-inventory-reboot-hosts
 
   test:
-    desc: Run all tests (Go and Python)
+    desc: Run all tests
     cmds:
       - go -C go test -v ./...
-      - uv run --directory python/reboot-orchestrator pytest tests/
 
   check:
     desc: Lint, format-check, type-check, and scan all files
@@ -49,9 +53,6 @@ tasks:
     desc: Auto-format and fix all source files
     cmds:
       - go -C go fmt ./...
-      - uv run --directory python/reboot-orchestrator ruff check --fix src/
-        tests/
-      - uv run --directory python/reboot-orchestrator ruff format src/ tests/
 
   tidy:
     desc: Tidy module dependencies

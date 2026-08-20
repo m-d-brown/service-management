@@ -58,3 +58,21 @@ service-management/
 ## Decision
 
 Adopt Option A (Language-First) for long-term maintainability.
+
+## Update: no Python packages at present
+
+The `python/` tree held one package, `reboot-orchestrator`, which was
+[rewritten in Go](004-reboot-orchestrator.md) and removed. The repository
+currently ships Go tools only, and `python/` no longer exists.
+
+The structural decision above is unchanged and is why removing it cost nothing
+elsewhere: a language's files were already confined to its own top-level
+directory, so deleting one left the root, the Taskfile targets, and the other
+language untouched. A future Python package goes back under `python/` and is
+added to the `workspace.members` list in the root `pyproject.toml`.
+
+Python itself remains provisioned — `.python-version`, `uv`, and the root
+`pyproject.toml` — because the lint toolchain is written in it: `pre-commit`
+drives the Go hooks and the generic file, markdown, and secret hooks. The `ruff`
+and `mypy` hooks were removed along with the package they linted, and belong
+next to whichever package needs them next.

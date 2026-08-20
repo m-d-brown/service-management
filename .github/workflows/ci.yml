@@ -83,8 +83,8 @@ jobs:
   # ----------------------------------------------------------------------------
   # JOB 2: TESTS
   # ----------------------------------------------------------------------------
-  # This job executes the automated unit tests for all languages via
-  # `task test` (Go and Python), mirroring the local developer command.
+  # This job executes the automated unit tests via `task test`, mirroring the
+  # local developer command.
   test:
     name: Tests
     runs-on: ubuntu-latest
@@ -97,18 +97,12 @@ jobs:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
-      # Python is needed for the Python test suite (uv run pytest).
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version-file: .python-version
-
       # Install task and uv (and the rest of mise.toml) so CI uses the same
       # runner and toolchain as local development.
       - name: Install tools via mise
         uses: jdx/mise-action@v2
 
-      # Run the full test suite (Go + Python). go.mod tidiness is verified by
-      # the check job via `task check`.
+      # Run the full test suite. go.mod tidiness is verified by the check job
+      # via `task check`.
       - name: Run tests
         run: task test

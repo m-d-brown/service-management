@@ -107,22 +107,27 @@ Wrote ansible/images.yml — 3 image(s) changed.
 
 ### `reboot-orchestrator`
 
-A lightweight, modular, and dependency-aware Python library and CLI tool
-designed to orchestrate system reboots across network infrastructure.
+A dependency-aware CLI tool that reboots hosts in the right order over plain
+SSH, and proves each one actually restarted.
 
 **Features:**
 
 - **Topological Sequence (DAG)**: Dynamically groups hosts into execution tiers
   based on topological dependency sorting (Kahn's Algorithm).
+- **No inventory format, no runner**: hosts, their addresses, their SSH user and
+  their ordering are given as arguments or piped in on stdin. Nothing about
+  Ansible is compiled in; see
+  [`ansible-inventory-reboot-hosts`](#ansible-inventory-reboot-hosts) to feed it
+  an existing inventory.
 - **Direct SSH Execution**: Triggers all reboots gracefully via parallel SSH
   commands, avoiding heavy external automation runners or playbooks.
-- **ACPI "Zombie" VM Workaround**: Safely handles virtual machines suffering
-  from poweroff bugs by executing pre-flight graceful halts and issuing fallback
-  cut-power commands on the hypervisor host via SSH if they do not halt in time.
 - **Asynchronous Reboots & Ping Tracking**: Dispatches reboot triggers
   asynchronously so that network/connectivity drops do not hang the
   orchestrator, and asynchronously tracks host status using continuous ICMP ping
   loops to guarantee a tier is fully online before moving to the next.
+- **Pending-Reboot Detection**: With `--if-needed`, probes the named hosts over
+  SSH and reboots only those actually waiting on one, re-checking each tier as
+  it comes up so guests already power-cycled by their parent are left alone.
 - **Boot State Verification**: Compares each host's kernel boot ID (or uptime,
   for hosts without one) before and after the reboot, so a host that answered
   ping without ever restarting is warned about and fails the run instead of
@@ -132,14 +137,76 @@ designed to orchestrate system reboots across network infrastructure.
 
 **Usage:**
 
-Run the tool using `uv` from the repository root:
-
 ```shell
-uv run --project python/reboot-orchestrator reboot-orchestrator [options] host1 host2 [host3 ...]
+reboot-orchestrator [flags] HOST_SPEC...
 ```
 
-For detailed usage, configuration, and API specifications, consult the
-[python/reboot-orchestrator README](python/reboot-orchestrator/README.md).
+The command line has two parts, and they deliberately look different:
+
+- **Flags** start with `--` and apply to the whole run: `--user ops`,
+  `--if-needed`.
+- **Host specs** are positional arguments naming the hosts to reboot. Each is a
+  host name followed by optional `key=value` fields joined by commas, carrying
+  no leading dashes: `vm-a,addr=10.0.0.21,user=admin`.
+
+A few names appear in both lists. The spec field is the more specific of the
+pair and wins: `--user` supplies the login user only for hosts whose spec has no
+`user=` field of its own.
+
+**Host spec fields** (written inside a `HOST_SPEC`, no dashes):
+
+| Field     | Meaning                                                              |
+| --------- | -------------------------------------------------------------------- |
+| `addr`    | Address to ping and SSH to (default: the host name)                  |
+| `user`    | SSH login user (default: `--user`)                                   |
+| `ssh-arg` | Extra `ssh` argument; repeatable                                     |
+| `after`   | Reboot this host only once the named host is back online; repeatable |
+
+Describing a small fleet entirely on the command line:
+
+```shell
+reboot-orchestrator --user ops \
+    hypervisor-1,addr=10.0.0.5 \
+    vm-a,addr=10.0.0.21,user=admin,after=hypervisor-1
+```
+
+Specs also arrive on stdin, one per line — a pipe is detected automatically, or
+name a file with `--hosts-from`. Hosts read that way are **context**: they can
+be depended on and are waited for, but only the hosts named as arguments are
+rebooted. Naming one that stdin already defined targets that definition rather
+than replacing it, so a target costs nothing more than its name:
+
+```shell
+ansible-inventory-reboot-hosts -i inventory.yml | reboot-orchestrator vm-a vm-b
+```
+
+Use `--all` to target every host read from stdin instead:
+
+```shell
+ansible-inventory-reboot-hosts -i inventory.yml | reboot-orchestrator --all --if-needed
+```
+
+**Flags** (apply to the whole run):
+
+| Flag                       | Default | Description                                            |
+| -------------------------- | ------- | ------------------------------------------------------ |
+| `--user`                   |         | SSH user for hosts that do not set one themselves      |
+| `--ssh-arg`                |         | Extra argument for every `ssh` invocation (repeatable) |
+| `--hosts-from`             |         | Read host specs from this file (`-` for stdin)         |
+| `--all`                    | `false` | Target every host read from stdin or `--hosts-from`    |
+| `--yes`, `-y`              | `false` | Bypass the interactive confirmation prompt             |
+| `--if-needed`              | `false` | Reboot only the targeted hosts with a pending reboot   |
+| `--ping-timeout`           | `1s`    | Timeout for a single ping query                        |
+| `--wait-drop`              | `15s`   | How long to wait for hosts to drop off the network     |
+| `--probe-timeout`          | `15s`   | Timeout for each SSH boot state probe                  |
+| `--skip-boot-verification` | `false` | Skip the SSH check that proves hosts rebooted          |
+
+Exit status is `0` when every tier completed, every host was checked, and none
+was proven to have skipped its reboot; `1` otherwise.
+
+> **Note:** when specs are piped in, stdin is spent, so the confirmation prompt
+> is read from `/dev/tty`. In a script or any context without a terminal, pass
+> `--yes`.
 
 **Example Output:**
 
@@ -152,14 +219,9 @@ The following hosts will be rebooted (parents first, nested dependents last):
 Recording pre-reboot boot state...
   Reading boot state of hypervisor-1:
     $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
-Executing pre-flight graceful halt for 'vm-a' via SSH...
-  $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new admin@10.0.0.21 'sudo poweroff || poweroff'
-Waiting 15s for 'vm-a' to power down...
-Verifying VM state and enforcing fallback stop command on hypervisor 'hypervisor-1' via SSH...
-  $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'sudo qm stop 101 || qm stop 101'
 Issuing reboot command to: hypervisor-1
   $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'sudo reboot || reboot'
-Waiting 15 seconds for hosts to drop off the network...
+Waiting 15s for hosts to drop off the network...
 Waiting for hypervisor-1, vm-a to return online...
   $ ping -c 1 -W 1 10.0.0.5
   $ ping -c 1 -W 1 10.0.0.21
@@ -193,6 +255,81 @@ Confirmed rebooted: 1  Not rebooted: 1  Unverified: 0
   [✗] vm-a: boot_id is unchanged (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192); the host never went down
 
 All tiers complete, but 1 host(s) could not be confirmed as rebooted.
+```
+
+### `ansible-inventory-reboot-hosts`
+
+Converts an Ansible YAML inventory into the host specs `reboot-orchestrator`
+reads, one per line on stdout.
+
+It exists so the orchestrator needs to know nothing about Ansible. Topology that
+already lives in an inventory is translated here and piped across; a fleet with
+no inventory at all is described directly on the orchestrator's command line.
+The boundary between the two is a stream of host specs anyone can read, diff, or
+write by hand.
+
+**Inventory variables read:**
+
+| Variable                    | Becomes                      |
+| --------------------------- | ---------------------------- |
+| `ip_addr` or `ansible_host` | `addr` (`ip_addr` wins)      |
+| `ansible_user`              | `user`                       |
+| `ansible_ssh_common_args`   | one `ssh-arg` per shell word |
+| `depends_on`                | one `after` per entry        |
+
+Groups nest arbitrarily deep through `children`, and a host appearing in several
+groups accumulates the variables from all of them. Dependencies are validated
+against the inventory, so a typo is caught before the orchestrator is handed the
+topology. Every other inventory variable is ignored rather than rejected — an
+inventory that also serves Ansible itself works untouched.
+
+**Example inventory:**
+
+```yaml
+all:
+  children:
+    hypervisors:
+      hosts:
+        hypervisor-1:
+          ip_addr: 10.0.0.5
+          ansible_user: root
+    guests:
+      hosts:
+        vm-a:
+          ip_addr: 10.0.0.21
+          ansible_user: admin
+          ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+          depends_on: [hypervisor-1]
+        vm-b:
+          ip_addr: 10.0.0.22
+          depends_on: [hypervisor-1]
+    apps:
+      hosts:
+        web1:
+          ip_addr: 10.0.0.30
+          depends_on:
+            - vm-a
+            - vm-b
+```
+
+Only the variables in the table above are read; the group names are the
+operator's own and carry no meaning here beyond nesting. The output below is
+what this inventory produces.
+
+**Usage:**
+
+```shell
+ansible-inventory-reboot-hosts [--inventory FILE] | reboot-orchestrator [flags] HOST...
+```
+
+**Example Output:**
+
+```text
+$ ansible-inventory-reboot-hosts -i inventory.yml
+hypervisor-1,addr=10.0.0.5,user=root
+vm-a,addr=10.0.0.21,user=admin,ssh-arg=-o,ssh-arg=StrictHostKeyChecking=no,after=hypervisor-1
+vm-b,addr=10.0.0.22,after=hypervisor-1
+web1,addr=10.0.0.30,after=vm-a,after=vm-b
 ```
 
 ### `proxmox-retrust-host-keys`
@@ -273,8 +410,7 @@ To set up your local development environment:
 
    _What this does: It installs `pre-commit` and configures the git hooks. Every
    time you try to `git commit`, it will automatically run tools like
-   `golangci-lint` (for Go) and `ruff` (for Python) to format and lint your
-   code._
+   `golangci-lint` to format and lint your code._
 
 You can also run these checks manually at any time without committing:
 
@@ -306,7 +442,7 @@ to manage operations across all languages:
 - `task check`: Lint, format-check, type-check, and scan all files.
 - `task format`: Auto-format and fix all source files.
 - `task build`: Build all binaries.
-- `task test`: Run all tests (Go and Python).
+- `task test`: Run all tests.
 - `task tidy`: Tidy all module dependencies.
 
 ## Repository Structure
@@ -316,6 +452,11 @@ to manage operations across all languages:
     SSH.
   - `go/cmd/update-container-manifest`: Tool to bump pinned image versions in an
     `images.yml` manifest to the newest stable within each major.
-- `python/`: (Planned) Python-based tools and libraries.
+  - `go/cmd/proxmox-retrust-host-keys`: Tool to re-trust guest SSH host keys,
+    verified out-of-band via the hypervisor.
+  - `go/cmd/reboot-orchestrator`: Dependency-aware reboot orchestration over
+    SSH.
+  - `go/cmd/ansible-inventory-reboot-hosts`: Converts an Ansible inventory into
+    `reboot-orchestrator` host specs.
 - `design/`: Architectural design documents.
 - `skills/`: Repository-specific skills and guides.
