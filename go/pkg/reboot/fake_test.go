@@ -118,19 +118,67 @@ func (f *fakeRunner) countMatching(substr string) int {
 	return n
 }
 
-// fakeClock advances only when something sleeps, so tests exercise the real
-// waiting logic instantly and can assert on how long was waited.
+// fakeClock advances only when something sleeps or ticks, so tests exercise the
+// real waiting logic instantly and can assert on how long was waited.
 type fakeClock struct {
 	mu sync.Mutex
 	// now is the current instant.
 	now time.Time
 	// slept is every duration slept, in order.
 	slept []time.Duration
+	// interval is the period the monitor asked its ticker for.
+	interval time.Duration
+	// ticks delivers monitor samples. It is unbuffered, so a send completes
+	// only once the monitor has taken the tick — which means the sweep it
+	// started for the previous tick has already finished. That is what lets a
+	// test drive sampling one step at a time with no sleeps and no polling.
+	ticks chan time.Time
 }
 
 // newFakeClock returns a clock at a fixed, readable instant.
 func newFakeClock() *fakeClock {
-	return &fakeClock{now: time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)}
+	return &fakeClock{
+		now:      time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC),
+		interval: time.Second,
+		ticks:    make(chan time.Time),
+	}
+}
+
+// maxFakeTicks bounds a fake ticker so a monitor waiting on something that will
+// never happen fails as a test timeout with a goroutine dump, rather than
+// spinning fake time forward forever.
+const maxFakeTicks = 1000
+
+// Ticker supplies monitor samples as fast as the monitor consumes them,
+// advancing fake time by one interval per tick.
+//
+// The channel is unbuffered, so the monitor takes ticks strictly one at a time
+// and the sweep for each finishes before the next arrives. Sampling therefore
+// advances in lockstep with whatever the fake runner is scripted to report,
+// which is what keeps these tests deterministic without any real sleeping.
+func (f *fakeClock) Ticker(d time.Duration) (<-chan time.Time, func()) {
+	f.mu.Lock()
+	f.interval = d
+	f.mu.Unlock()
+
+	ticks := make(chan time.Time)
+	stop := make(chan struct{})
+	go func() {
+		defer close(ticks)
+		for range maxFakeTicks {
+			f.mu.Lock()
+			f.now = f.now.Add(d)
+			now := f.now
+			f.mu.Unlock()
+			select {
+			case ticks <- now:
+			case <-stop:
+				return
+			}
+		}
+		<-stop
+	}()
+	return ticks, sync.OnceFunc(func() { close(stop) })
 }
 
 // Now reports the current fake time.

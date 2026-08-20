@@ -31,9 +31,9 @@ network infrastructure.
   complete an ACPI power off by halting them gracefully and then cutting their
   power from elsewhere, without building any particular hypervisor into the
   tool.
-- **Reachability and State Verification**: Track system online/offline
-  transitions using ICMP ping loops to guarantee a tier is fully online before
-  moving to the next.
+- **Observed Power Cycles**: Watch every host in a tier from before it is
+  powered down until it is usable again, so the drop and the return are seen and
+  logged rather than inferred from a fixed wait.
 - **Proof of Reboot**: Compare each host's kernel boot identity before and after
   the reboot so that a host which never restarted is reported rather than
   silently counted as successful.
@@ -55,8 +55,10 @@ graph TD
     Graph -->|Construct tiers| Executor[Tiered Executor]
     Executor -->|Parallel direct SSH reboot| Targets[(Target Systems)]
     Executor -->|Graceful halt, then force-off command| Delegate[(Force-Off Delegates)]
-    Executor -->|ICMP ping tracking| Ping[Ping Reachability Monitor]
+    Executor -->|Started before the reboot, samples throughout| Monitor[Reboot Monitor]
+    Monitor -->|ICMP for the drop, SSH for the return| Targets
     Executor -->|boot_id/uptime probe before and after| Verifier[Boot State Verifier]
+    Monitor -->|Observed power cycle, where markers cannot decide| Verifier
 ```
 
 ### 1. Host Specs as the Input Contract
@@ -140,24 +142,36 @@ the reason `ssh-arg` values are literal `ssh` arguments.
   `sudo X || X` pattern used for the tool's own commands: it belongs to the
   operator, and this tool cannot know whether the delegate's CLI wants sudo.
 
-### 5. ICMP Reachability Monitoring
+### 5. Reboot Monitoring
 
-- During execution, the orchestrator tracks host transitions from online to
-  offline, and back to online.
-- Ping loops verify that all hosts in the current tier are reachable before the
-  orchestrator progresses to the next, along with every host that sits behind
-  one of them — a dependent goes down with its parent whether or not it was
-  targeted itself.
-- An initial delay lets hosts fall off the network first. Without it, a host
-  that has been told to reboot but has not yet stopped forwarding packets
-  answers immediately, and the run advances while its parent is still on its way
-  down.
+Sampling starts before anything is powered down and continues on its own
+schedule while the tier reboots, so the transition is observed as it happens.
+Starting first is what makes the drop evidence at all: a force-off can take a
+guest away before its own reboot is ever issued, and a fast guest can be gone
+and back inside a single fixed wait.
+
+- **Two probes, two purposes.** ICMP catches the drop, because it is cheap
+  enough to sample every second and a powered-off host answers nothing. The
+  return is confirmed over SSH, because the kernel answers ping as soon as its
+  network stack is up — often well before sshd accepts a connection — and a host
+  handed to the next tier on ping alone may not yet be usable.
+- **Scope.** Every host in the tier is watched, along with every host that sits
+  behind one of them: a dependent goes down with its parent whether or not it
+  was targeted itself.
+- **Sample timing.** A sweep is stamped with the instant it began rather than
+  each probe reading the clock as it finishes, so a tier that went down together
+  is recorded as having gone down together.
+- **Hosts that never drop.** A host still answering after its drop window is
+  reported once and the run proceeds. The monitor states only what it saw;
+  whether that means a failed reboot is decided by verification, which knows
+  which hosts were actually targeted.
+- **Replaces the fixed wait.** `--wait-drop` bounds how long a host that never
+  stops answering is waited for, rather than being a delay every tier pays.
 
 ### 6. Boot State Verification
 
-Reachability is a necessary but insufficient signal: a host whose reboot command
-never landed answers pings continuously and is indistinguishable from one that
-restarted quickly. Each tier is therefore bracketed by a boot identity probe.
+Reachability alone is a necessary but insufficient signal, so each tier is also
+bracketed by a boot identity probe read from the host itself.
 
 - **Markers**: `/proc/sys/kernel/random/boot_id` is authoritative because the
   kernel regenerates it on every boot. `/proc/uptime` is the fallback for hosts
@@ -169,8 +183,14 @@ restarted quickly. Each tier is therefore bracketed by a boot identity probe.
   uptime that dropped below its previous value, or below the elapsed wall-clock
   window between the two readings, confirms it. An unchanged boot ID or an
   uptime that kept accumulating proves the host stayed up.
-- **Unverifiable hosts**: A failed probe, or a host exposing neither marker, is
-  reported as unverified rather than assumed successful.
+- **Observation breaks ties**: Markers stay authoritative, being read from the
+  host rather than seen from outside. Where they cannot settle the question, the
+  observed cycle does: a host seen to go down and come back is confirmed, and
+  one that answered every probe for its whole drop window is reported as never
+  having rebooted. This is what makes appliances and switches — which expose
+  neither marker — verifiable at all.
+- **Unverifiable hosts**: A host that neither exposes a marker nor was observed
+  either way is reported as unverified rather than assumed successful.
 - **Failure handling**: Orchestration continues through the remaining tiers so a
   run is never left half-applied, and closes with a summary grouping hosts by
   outcome. The CLI exits non-zero when a host is proven not to have rebooted.

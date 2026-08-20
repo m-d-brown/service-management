@@ -142,12 +142,37 @@ func CaptureBootState(
 	return &state
 }
 
-// VerifyReboot compares boot identities recorded before and after a reboot.
+// VerifyReboot decides whether a host restarted, from its boot markers first
+// and the monitor's observation second.
+//
+// Boot markers stay authoritative: they are read from the host itself and say
+// what happened rather than what was seen from outside. The observed power
+// cycle only breaks ties the markers leave open — which is most valuable on
+// hosts that expose no marker at all, whose reboots were previously
+// unverifiable in either direction.
+func VerifyReboot(host string, before, after *BootState, cycle Cycle) RebootVerification {
+	verdict := verifyByMarkers(host, before, after)
+	if verdict.Status != StatusUnknown {
+		return verdict
+	}
+	switch {
+	case cycle.Complete():
+		return RebootVerification{host, StatusConfirmed, fmt.Sprintf(
+			"%s, but it was seen to go down at %s and come back %s later",
+			verdict.Detail, stamp(cycle.DownAt), formatUptime(cycle.DownFor()))}
+	case cycle.StayedUp():
+		return RebootVerification{host, StatusNotRebooted, fmt.Sprintf(
+			"%s, and it answered every probe throughout; it never went down", verdict.Detail)}
+	}
+	return verdict
+}
+
+// verifyByMarkers compares boot identities recorded before and after a reboot.
 //
 // A changed boot ID is definitive. Failing that, uptime decides: a host that
 // restarted must report an uptime lower than its previous one, or one no larger
 // than the window between the two readings.
-func VerifyReboot(host string, before, after *BootState) RebootVerification {
+func verifyByMarkers(host string, before, after *BootState) RebootVerification {
 	switch {
 	case before == nil && after == nil:
 		return RebootVerification{host, StatusUnknown,

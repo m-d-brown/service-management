@@ -26,7 +26,20 @@ type fleet struct {
 	unprobeable map[string]bool
 	// reboots counts reboot commands per destination.
 	reboots map[string]int
+	// markerless names destinations exposing neither boot_id nor uptime, the
+	// appliances whose reboots only the monitor can vouch for.
+	markerless map[string]bool
+	// downFor is how many more probes a destination will refuse, modelling the
+	// stretch of a reboot where the host is off the network.
+	downFor map[string]int
+	// guests names the destinations that go down with a destination, as a
+	// hypervisor's guests go down with it whether or not anyone rebooted them.
+	guests map[string][]string
 }
+
+// rebootDownSamples is how many probes a rebooting host misses before it
+// answers again. More than one, so a drop is distinguishable from a blip.
+const rebootDownSamples = 3
 
 // newFleet builds a fleet where every named destination is up to date.
 func newFleet(destinations ...string) *fleet {
@@ -36,6 +49,9 @@ func newFleet(destinations ...string) *fleet {
 		pending:       map[string]bool{},
 		unprobeable:   map[string]bool{},
 		reboots:       map[string]int{},
+		markerless:    map[string]bool{},
+		downFor:       map[string]int{},
+		guests:        map[string][]string{},
 	}
 	for _, dest := range destinations {
 		f.bootIDs[dest] = "boot-" + dest + "-0"
@@ -48,12 +64,20 @@ func (f *fleet) runner() *fakeRunner {
 	return &fakeRunner{respond: f.respond, onStart: f.start}
 }
 
-// destination extracts the host an ssh call was aimed at.
+// destination extracts the address an ssh call was aimed at.
+//
+// The user is stripped so a host is keyed the same way however it is reached:
+// ssh addresses it as user@addr while ping uses the bare address, and a fleet
+// that keyed them separately would model one host as two.
 func destination(c call) string {
 	if len(c.args) < 2 {
 		return ""
 	}
-	return c.args[len(c.args)-2]
+	dest := c.args[len(c.args)-2]
+	if _, addr, found := strings.Cut(dest, "@"); found {
+		return addr
+	}
+	return dest
 }
 
 // respond answers the commands the orchestrator awaits.
@@ -62,11 +86,24 @@ func (f *fleet) respond(c call) (string, error) {
 	defer f.mu.Unlock()
 
 	if c.name == "ping" {
+		// One ping per host per sample, so counting them down here is what
+		// gives a rebooting host a plausible stretch of being unreachable.
+		addr := c.args[len(c.args)-1]
+		if f.downFor[addr] > 0 {
+			f.downFor[addr]--
+			return "", errPingFailed
+		}
 		return "", nil
 	}
 	dest := destination(c)
+	if f.downFor[dest] > 0 {
+		return "", errSSHFailed
+	}
 	switch {
 	case c.remote() == bootProbeCommand:
+		if f.markerless[dest] {
+			return "boot_id=\nuptime=\n", nil
+		}
 		return fmt.Sprintf("boot_id=%s\nuptime=1000.0\n", f.bootIDs[dest]), nil
 	case c.remote() == "/bin/sh":
 		if f.unprobeable[dest] {
@@ -94,6 +131,12 @@ func (f *fleet) start(c call) {
 	if f.ignoresReboot[dest] {
 		return
 	}
+	// The host leaves the network for a while, which is what the monitor is
+	// watching for, and takes anything running on it down too.
+	f.downFor[dest] = rebootDownSamples
+	for _, guest := range f.guests[dest] {
+		f.downFor[guest] = rebootDownSamples
+	}
 	// A real reboot regenerates the kernel's boot id and clears any pending
 	// reboot the host was reporting.
 	f.bootIDs[dest] = fmt.Sprintf("boot-%s-%d", dest, f.reboots[dest])
@@ -108,6 +151,7 @@ func testConfig() Config {
 		DropWait:        15 * time.Second,
 		ForceOffWait:    15 * time.Second,
 		ProbeTimeout:    15 * time.Second,
+		SampleInterval:  time.Second,
 		VerifyBootState: true,
 	}
 }
@@ -505,5 +549,86 @@ func TestRunBaselineIsTakenBeforeReboot(t *testing.T) {
 	}
 	if firstProbe > firstReboot {
 		t.Error("the boot state baseline was taken after the reboot, want it before")
+	}
+}
+
+func TestRunWatchesBeforeAnythingGoesDown(t *testing.T) {
+	f := newFleet("10.0.0.5")
+	runner := f.runner()
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &out}
+	if _, err := orch.Run(context.Background(), newPlan(t, []string{"hv1,addr=10.0.0.5"})); err != nil {
+		t.Fatal(err)
+	}
+
+	// A drop is only evidence if something was already watching when it
+	// happened, so the first sample has to precede the first reboot command.
+	firstPing, firstReboot := -1, -1
+	for i, line := range runner.lines() {
+		if firstPing < 0 && strings.HasPrefix(line, "ping ") {
+			firstPing = i
+		}
+		if firstReboot < 0 && strings.Contains(line, "sudo reboot") {
+			firstReboot = i
+		}
+	}
+	if firstPing < 0 || firstReboot < 0 {
+		t.Fatalf("expected both a ping and a reboot, got ping=%d reboot=%d", firstPing, firstReboot)
+	}
+	if firstPing > firstReboot {
+		t.Errorf("first ping at %d came after the reboot at %d; the drop would go unobserved",
+			firstPing, firstReboot)
+	}
+}
+
+func TestRunConfirmsAMarkerlessHostFromTheObservedCycle(t *testing.T) {
+	// A switch or appliance exposing neither boot_id nor uptime used to be
+	// unverifiable in either direction. Watching it go down and come back is
+	// the only evidence available, and it is enough.
+	f := newFleet("10.0.0.9")
+	f.markerless["10.0.0.9"] = true
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: f.runner(), Clock: newFakeClock(), Out: &out}
+	result, err := orch.Run(context.Background(), newPlan(t, []string{"switch1,addr=10.0.0.9"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Verifications) != 1 {
+		t.Fatalf("got %d verifications, want 1", len(result.Verifications))
+	}
+	got := result.Verifications[0]
+	if got.Status != StatusConfirmed {
+		t.Errorf("Status = %v (%s), want the observed cycle to confirm the reboot", got.Status, got.Detail)
+	}
+	if !strings.Contains(got.Detail, "seen to go down") {
+		t.Errorf("Detail = %q, want it to cite the observed cycle", got.Detail)
+	}
+	if !strings.Contains(out.String(), "[back] switch1 is back") {
+		t.Errorf("output = %q, want the return logged", out.String())
+	}
+}
+
+func TestRunReportsAHostThatNeverLeftTheNetwork(t *testing.T) {
+	// The host accepts the reboot command, never goes down, and has no marker
+	// to contradict itself with. Answering every probe is the proof.
+	f := newFleet("10.0.0.9")
+	f.markerless["10.0.0.9"] = true
+	f.ignoresReboot["10.0.0.9"] = true
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: f.runner(), Clock: newFakeClock(), Out: &out}
+	result, err := orch.Run(context.Background(), newPlan(t, []string{"switch1,addr=10.0.0.9"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := result.NotRebooted(); len(got) != 1 {
+		t.Fatalf("NotRebooted() = %v, want the host reported as never rebooted", got)
+	}
+	if !strings.Contains(out.String(), "[warn] switch1 answered every probe") {
+		t.Errorf("output = %q, want the never-dropped warning", out.String())
 	}
 }

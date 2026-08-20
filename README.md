@@ -126,17 +126,23 @@ SSH, and proves each one actually restarted.
   powering down, stalling the hypervisor's own reboot — runs a graceful halt,
   waits, and then cuts the power with a command of your choosing on a host of
   your choosing.
-- **Asynchronous Reboots & Ping Tracking**: Dispatches reboot triggers
-  asynchronously so that network/connectivity drops do not hang the
-  orchestrator, and asynchronously tracks host status using continuous ICMP ping
-  loops to guarantee a tier is fully online before moving to the next.
+- **Asynchronous Reboots**: Dispatches reboot triggers asynchronously so that
+  network/connectivity drops do not hang the orchestrator.
+- **Watches the Power Cycle**: Starts sampling every host in a tier _before_
+  anything is powered down and keeps sampling while it reboots, so the moment a
+  host leaves the network and the moment it comes back are both observed and
+  logged rather than assumed. ICMP catches the drop; the return is confirmed
+  over SSH, because the kernel answers ping long before sshd will accept a
+  connection.
 - **Pending-Reboot Detection**: With `--if-needed`, probes the named hosts over
   SSH and reboots only those actually waiting on one, re-checking each tier as
   it comes up so guests already power-cycled by their parent are left alone.
 - **Boot State Verification**: Compares each host's kernel boot ID (or uptime,
   for hosts without one) before and after the reboot, so a host that answered
   ping without ever restarting is warned about and fails the run instead of
-  passing silently.
+  passing silently. Where a host exposes neither marker — appliances, switches,
+  busybox firmware — the observed power cycle settles it instead, which makes
+  those reboots verifiable at all for the first time.
 - **Command Transparency**: Echoes every SSH and ping command as a
   copy-pasteable shell line before running it.
 
@@ -232,19 +238,20 @@ ansible-inventory-reboot-hosts -i inventory.yml | reboot-orchestrator --all --if
 
 **Flags** (apply to the whole run):
 
-| Flag                       | Default | Description                                               |
-| -------------------------- | ------- | --------------------------------------------------------- |
-| `--user`                   |         | SSH user for hosts that do not set one themselves         |
-| `--ssh-arg`                |         | Extra argument for every `ssh` invocation (repeatable)    |
-| `--hosts-from`             |         | Read host specs from this file (`-` for stdin)            |
-| `--all`                    | `false` | Target every host read from stdin or `--hosts-from`       |
-| `--yes`, `-y`              | `false` | Bypass the interactive confirmation prompt                |
-| `--if-needed`              | `false` | Reboot only the targeted hosts with a pending reboot      |
-| `--ping-timeout`           | `1s`    | Timeout for a single ping query                           |
-| `--wait-drop`              | `15s`   | How long to wait for hosts to drop off the network        |
-| `--force-off-wait`         | `15s`   | Grace period for a halt before the force-off command runs |
-| `--probe-timeout`          | `15s`   | Timeout for each SSH boot state probe                     |
-| `--skip-boot-verification` | `false` | Skip the SSH check that proves hosts rebooted             |
+| Flag                       | Default | Description                                                       |
+| -------------------------- | ------- | ----------------------------------------------------------------- |
+| `--user`                   |         | SSH user for hosts that do not set one themselves                 |
+| `--ssh-arg`                |         | Extra argument for every `ssh` invocation (repeatable)            |
+| `--hosts-from`             |         | Read host specs from this file (`-` for stdin)                    |
+| `--all`                    | `false` | Target every host read from stdin or `--hosts-from`               |
+| `--yes`, `-y`              | `false` | Bypass the interactive confirmation prompt                        |
+| `--if-needed`              | `false` | Reboot only the targeted hosts with a pending reboot              |
+| `--ping-timeout`           | `1s`    | Timeout for a single ping query                                   |
+| `--wait-drop`              | `15s`   | How long to wait for a host to drop before giving up on seeing it |
+| `--sample-interval`        | `1s`    | How often to probe each host while it reboots                     |
+| `--force-off-wait`         | `15s`   | Grace period for a halt before the force-off command runs         |
+| `--probe-timeout`          | `15s`   | Timeout for each SSH boot state probe                             |
+| `--skip-boot-verification` | `false` | Skip the SSH check that proves hosts rebooted                     |
 
 Exit status is `0` when every tier completed, every host was checked, and none
 was proven to have skipped its reboot; `1` otherwise.
@@ -264,14 +271,17 @@ The following hosts will be rebooted (parents first, nested dependents last):
 Recording pre-reboot boot state...
   Reading boot state of hypervisor-1:
     $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
-Issuing reboot command to: hypervisor-1
-  $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'sudo reboot || reboot'
-Waiting 15s for hosts to drop off the network...
-Waiting for hypervisor-1, vm-a to return online...
+Watching hypervisor-1, vm-a for the reboot (sampling every 1s)...
   $ ping -c 1 -W 1 10.0.0.5
   $ ping -c 1 -W 1 10.0.0.21
-[✓] hypervisor-1 is reachable.
-[✓] vm-a is reachable.
+Issuing reboot command to: hypervisor-1
+  $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'sudo reboot || reboot'
+[down] hypervisor-1 stopped answering at 09:14:07
+[down] vm-a stopped answering at 09:14:07
+[ping] hypervisor-1 answers ping again at 09:14:49; waiting for SSH
+[back] hypervisor-1 is back at 09:15:02, after 55s down
+[ping] vm-a answers ping again at 09:15:21; waiting for SSH
+[back] vm-a is back at 09:15:29, after 1m 22s down
 Verifying boot state changed...
   Reading boot state of hypervisor-1:
     $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
@@ -291,7 +301,7 @@ A host that answers ping without having actually restarted is called out and
 fails the run rather than being reported as a success:
 
 ```text
-[✓] vm-a is reachable.
+[warn] vm-a answered every probe; it never left the network
 Verifying boot state changed...
 [✗] WARNING: vm-a did NOT reboot: boot_id is unchanged (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192); the host never went down
 

@@ -21,6 +21,9 @@ func TestParseArgsDefaults(t *testing.T) {
 	if !opts.config.VerifyBootState {
 		t.Error("VerifyBootState = false, want it on by default")
 	}
+	if opts.config.SampleInterval != time.Second {
+		t.Errorf("SampleInterval = %v, want 1s", opts.config.SampleInterval)
+	}
 	if opts.config.DropWait != 15*time.Second {
 		t.Errorf("DropWait = %v, want 15s", opts.config.DropWait)
 	}
@@ -37,6 +40,7 @@ func TestParseArgsFlags(t *testing.T) {
 		"--if-needed",
 		"--skip-boot-verification",
 		"--wait-drop", "30s",
+		"--sample-interval", "250ms",
 		"--probe-timeout", "5s",
 		"--yes",
 		"web1",
@@ -55,6 +59,9 @@ func TestParseArgsFlags(t *testing.T) {
 	}
 	if opts.config.VerifyBootState {
 		t.Error("VerifyBootState = true, want it disabled by --skip-boot-verification")
+	}
+	if opts.config.SampleInterval != 250*time.Millisecond {
+		t.Errorf("SampleInterval = %v, want 250ms", opts.config.SampleInterval)
 	}
 	if opts.config.DropWait != 30*time.Second {
 		t.Errorf("DropWait = %v, want 30s", opts.config.DropWait)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kballard/go-shellquote"
@@ -76,6 +77,11 @@ type Clock interface {
 	Now() time.Time
 	// Sleep blocks for the given duration.
 	Sleep(d time.Duration)
+	// Ticker delivers a value every d until the returned stop is called. It is
+	// what lets the reboot monitor sample on its own schedule while the rest of
+	// the run proceeds, and what lets a test drive that sampling one step at a
+	// time instead of racing a real ticker.
+	Ticker(d time.Duration) (<-chan time.Time, func())
 }
 
 // RealClock is the production Clock.
@@ -86,6 +92,31 @@ func (RealClock) Now() time.Time { return time.Now() }
 
 // Sleep blocks for the given duration.
 func (RealClock) Sleep(d time.Duration) { time.Sleep(d) }
+
+// Ticker delivers a value every d until stopped.
+func (RealClock) Ticker(d time.Duration) (<-chan time.Time, func()) {
+	ticker := time.NewTicker(d)
+	return ticker.C, ticker.Stop
+}
+
+// syncWriter serialises writes to the writer beneath it.
+//
+// The monitor narrates what it sees from its own goroutine while the run
+// narrates what it is doing from the caller's, and both write to the same
+// place. Sharing one lock is what keeps a sampled transition from landing in
+// the middle of another line — and what makes writing to a plain bytes.Buffer
+// safe at all.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+// Write passes the bytes through under the lock.
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
 
 // report writes a progress line. Progress output is best-effort, so write
 // errors are deliberately ignored.

@@ -5,6 +5,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -12,9 +13,13 @@ import (
 type Config struct {
 	// PingTimeout bounds a single ICMP echo.
 	PingTimeout time.Duration
-	// DropWait is how long to let hosts fall off the network before polling
-	// for their return.
+	// DropWait bounds how long a host that never stops answering is waited
+	// for before the run accepts that it is not going to drop.
 	DropWait time.Duration
+	// SampleInterval is how often the monitor probes each host while it is
+	// rebooting. It sets the resolution of the drop: a host gone for less than
+	// this may pass unseen.
+	SampleInterval time.Duration
 	// ForceOffWait is how long a host gets to halt gracefully before its
 	// force-off command is run.
 	ForceOffWait time.Duration
@@ -28,6 +33,21 @@ type Config struct {
 	IfNeeded bool
 }
 
+// defaultSampleInterval is how often the monitor samples when a caller has not
+// said. It is short enough to catch a fast guest's whole power cycle and long
+// enough that a large tier is not flooded with probes.
+const defaultSampleInterval = time.Second
+
+// sampleInterval is the configured sampling period, or a sane default. A ticker
+// cannot be built from a zero or negative period, so this is the difference
+// between a working default and a panic for a caller who left Config alone.
+func (c Config) sampleInterval() time.Duration {
+	if c.SampleInterval <= 0 {
+		return defaultSampleInterval
+	}
+	return c.SampleInterval
+}
+
 // Orchestrator runs tiered reboots.
 type Orchestrator struct {
 	// Config tunes the run.
@@ -38,6 +58,18 @@ type Orchestrator struct {
 	Clock Clock
 	// Out receives progress output.
 	Out io.Writer
+
+	// outOnce guards the lazy creation of the shared, serialised writer.
+	outOnce sync.Once
+	// out is Out behind a lock, shared with the monitor goroutine.
+	out io.Writer
+}
+
+// writer returns Out wrapped so the run and the monitor can both narrate to it
+// without their lines colliding.
+func (o *Orchestrator) writer() io.Writer {
+	o.outOnce.Do(func() { o.out = &syncWriter{w: o.Out} })
+	return o.out
 }
 
 // Result is what a run produced.
@@ -73,7 +105,7 @@ func (o *Orchestrator) SelectPending(ctx context.Context, plan Plan) (Plan, []Re
 	}
 
 	statuses := ProbeHosts(ctx, o.Runner, plan.hostsFor(sortedTargets(plan.Targets)))
-	PrintProbeReport(o.Out, statuses)
+	PrintProbeReport(o.writer(), statuses)
 
 	pending, unprobed := o.partitionPending(statuses, false)
 	plan.Targets = pending
@@ -99,11 +131,11 @@ func (o *Orchestrator) partitionPending(statuses []RebootStatus, announceSkips b
 		case NeedUnknown:
 			unprobed = append(unprobed, status)
 			if announceSkips {
-				report(o.Out, "Skipping %s: %s\n", status.Host, status.Reason)
+				report(o.writer(), "Skipping %s: %s\n", status.Host, status.Reason)
 			}
 		case NeedNo:
 			if announceSkips {
-				report(o.Out, "Skipping %s: no longer needs a reboot.\n", status.Host)
+				report(o.writer(), "Skipping %s: no longer needs a reboot.\n", status.Host)
 			}
 		}
 	}
@@ -120,7 +152,7 @@ func (o *Orchestrator) partitionPending(statuses []RebootStatus, announceSkips b
 func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 	var result Result
 	if len(plan.Targets) == 0 {
-		report(o.Out, "No hosts targeted for reboot.\n")
+		report(o.writer(), "No hosts targeted for reboot.\n")
 		return result, nil
 	}
 
@@ -134,7 +166,7 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 	forced := map[string]bool{}
 
 	for position, tier := range tiers {
-		report(o.Out, "\n=== Executing Tier: %d ===\n", position+1)
+		report(o.writer(), "\n=== Executing Tier: %d ===\n", position+1)
 
 		tierNames := tier
 		// Re-check every tier but the first. The tiers before this one have
@@ -151,7 +183,7 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 			tierNames, unprobed = o.partitionPending(statuses, true)
 			result.Unprobed = append(result.Unprobed, unprobed...)
 			if len(tierNames) == 0 {
-				report(o.Out, "Tier %d is already up to date; nothing to do.\n", position+1)
+				report(o.writer(), "Tier %d is already up to date; nothing to do.\n", position+1)
 				continue
 			}
 		}
@@ -169,19 +201,28 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 			baselines = o.captureBaselines(ctx, tierHosts)
 		}
 
+		// Start watching before anything powers a host down. A force-off can
+		// take a guest away before its own reboot is ever issued, and a drop is
+		// only evidence if something was already looking when it happened.
+		monitor := StartMonitor(ctx, o.writer(), o.Runner, o.Clock, o.waitList(plan, tierNames),
+			o.Config.sampleInterval(), o.Config.PingTimeout, o.Config.ProbeTimeout, o.Config.DropWait)
+
 		o.forceOffHosts(ctx, plan, forced, inTier)
 
-		RebootHosts(o.Out, o.Runner, tierHosts)
+		RebootHosts(o.writer(), o.Runner, tierHosts)
 
-		if err := WaitForHosts(ctx, o.Out, o.Runner, o.Clock, o.waitList(plan, tierNames),
-			o.Config.DropWait, o.Config.PingTimeout); err != nil {
-			return result, err
+		waitErr := monitor.WaitForReturn(ctx)
+		monitor.Stop()
+		cycles := monitor.Cycles()
+		if waitErr != nil {
+			return result, waitErr
 		}
 
-		// Reachability alone does not prove a reboot, so confirm the boot
-		// identity changed before dependent tiers are touched.
+		// Coming back is not the same as having restarted, so the boot identity
+		// still decides; the observed cycle only speaks where it cannot.
 		if o.Config.VerifyBootState {
-			result.Verifications = append(result.Verifications, o.verifyTier(ctx, tierHosts, baselines)...)
+			result.Verifications = append(result.Verifications,
+				o.verifyTier(ctx, tierHosts, baselines, cycles)...)
 		}
 	}
 
@@ -205,7 +246,7 @@ func (o *Orchestrator) forceOffHosts(ctx context.Context, plan Plan, forced, inT
 		if !inTier[name] && !inTier[host.ForceOff.Via] {
 			continue
 		}
-		ForceHostOff(ctx, o.Out, o.Runner, o.Clock,
+		ForceHostOff(ctx, o.writer(), o.Runner, o.Clock,
 			host, plan.Hosts[host.ForceOff.Via], o.Config.ForceOffWait)
 		forced[name] = true
 	}
@@ -227,12 +268,12 @@ func (o *Orchestrator) waitList(plan Plan, tierNames []string) []Host {
 
 // captureBaselines records the pre-reboot boot identity of each host in a tier.
 func (o *Orchestrator) captureBaselines(ctx context.Context, hosts []Host) map[string]*BootState {
-	report(o.Out, "Recording pre-reboot boot state...\n")
+	report(o.writer(), "Recording pre-reboot boot state...\n")
 	baselines := make(map[string]*BootState, len(hosts))
 	for _, host := range hosts {
-		state := CaptureBootState(ctx, o.Out, o.Runner, o.Clock, host, o.Config.ProbeTimeout)
+		state := CaptureBootState(ctx, o.writer(), o.Runner, o.Clock, host, o.Config.ProbeTimeout)
 		if state == nil {
-			report(o.Out, "  WARNING: cannot read the boot state of %q over SSH. The reboot "+
+			report(o.writer(), "  WARNING: cannot read the boot state of %q over SSH. The reboot "+
 				"command will likely fail the same way, and the reboot cannot be verified.\n", host.Name)
 		}
 		baselines[host.Name] = state
@@ -241,19 +282,20 @@ func (o *Orchestrator) captureBaselines(ctx context.Context, hosts []Host) map[s
 }
 
 // verifyTier re-reads each host's boot identity and compares it to the baseline.
-func (o *Orchestrator) verifyTier(ctx context.Context, hosts []Host, baselines map[string]*BootState) []RebootVerification {
-	report(o.Out, "Verifying boot state changed...\n")
+func (o *Orchestrator) verifyTier(ctx context.Context, hosts []Host,
+	baselines map[string]*BootState, cycles map[string]Cycle) []RebootVerification {
+	report(o.writer(), "Verifying boot state changed...\n")
 	results := make([]RebootVerification, 0, len(hosts))
 	for _, host := range hosts {
-		after := CaptureBootState(ctx, o.Out, o.Runner, o.Clock, host, o.Config.ProbeTimeout)
-		result := VerifyReboot(host.Name, baselines[host.Name], after)
+		after := CaptureBootState(ctx, o.writer(), o.Runner, o.Clock, host, o.Config.ProbeTimeout)
+		result := VerifyReboot(host.Name, baselines[host.Name], after, cycles[host.Name])
 		switch result.Status {
 		case StatusConfirmed:
-			report(o.Out, "[✓] %s rebooted: %s\n", host.Name, result.Detail)
+			report(o.writer(), "[✓] %s rebooted: %s\n", host.Name, result.Detail)
 		case StatusNotRebooted:
-			report(o.Out, "[✗] WARNING: %s did NOT reboot: %s\n", host.Name, result.Detail)
+			report(o.writer(), "[✗] WARNING: %s did NOT reboot: %s\n", host.Name, result.Detail)
 		case StatusUnknown:
-			report(o.Out, "[?] WARNING: %s reboot unverified: %s\n", host.Name, result.Detail)
+			report(o.writer(), "[?] WARNING: %s reboot unverified: %s\n", host.Name, result.Detail)
 		}
 		results = append(results, result)
 	}
@@ -263,7 +305,7 @@ func (o *Orchestrator) verifyTier(ctx context.Context, hosts []Host, baselines m
 // printSummary writes a closing report grouping hosts by outcome.
 func (o *Orchestrator) printSummary(results []RebootVerification) {
 	if len(results) == 0 {
-		report(o.Out, "\nAll tiers complete. Reboot orchestration finished successfully.\n")
+		report(o.writer(), "\nAll tiers complete. Reboot orchestration finished successfully.\n")
 		return
 	}
 
@@ -279,21 +321,21 @@ func (o *Orchestrator) printSummary(results []RebootVerification) {
 		}
 	}
 
-	report(o.Out, "\n=== Reboot Verification Summary ===\n")
-	report(o.Out, "Confirmed rebooted: %d  Not rebooted: %d  Unverified: %d\n",
+	report(o.writer(), "\n=== Reboot Verification Summary ===\n")
+	report(o.writer(), "Confirmed rebooted: %d  Not rebooted: %d  Unverified: %d\n",
 		len(confirmed), len(failed), len(unknown))
 	for _, result := range failed {
-		report(o.Out, "  [✗] %s: %s\n", result.Host, result.Detail)
+		report(o.writer(), "  [✗] %s: %s\n", result.Host, result.Detail)
 	}
 	for _, result := range unknown {
-		report(o.Out, "  [?] %s: %s\n", result.Host, result.Detail)
+		report(o.writer(), "  [?] %s: %s\n", result.Host, result.Detail)
 	}
 
 	if unconfirmed := len(failed) + len(unknown); unconfirmed > 0 {
-		report(o.Out, "\nAll tiers complete, but %d host(s) could not be confirmed as rebooted.\n", unconfirmed)
+		report(o.writer(), "\nAll tiers complete, but %d host(s) could not be confirmed as rebooted.\n", unconfirmed)
 		return
 	}
-	report(o.Out, "\nAll tiers complete. Reboot orchestration finished successfully.\n")
+	report(o.writer(), "\nAll tiers complete. Reboot orchestration finished successfully.\n")
 }
 
 // hostsFor resolves names to their definitions, preserving order.

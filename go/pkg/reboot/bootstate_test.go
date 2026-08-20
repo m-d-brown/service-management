@@ -77,6 +77,7 @@ func TestVerifyReboot(t *testing.T) {
 		name       string
 		before     *BootState
 		after      *BootState
+		cycle      Cycle
 		wantStatus VerificationStatus
 		wantDetail string
 	}{
@@ -164,10 +165,69 @@ func TestVerifyReboot(t *testing.T) {
 			wantStatus: StatusConfirmed,
 			wantDetail: "uptime reset",
 		},
+		{
+			// The case this exists for: an appliance with no marker at all was
+			// previously unverifiable in either direction.
+			name:       "no marker but a cycle was observed",
+			before:     &BootState{CapturedAt: base},
+			after:      &BootState{CapturedAt: after},
+			cycle:      watchedCycle(base.Add(4*time.Second), base.Add(47*time.Second)),
+			wantStatus: StatusConfirmed,
+			wantDetail: "seen to go down",
+		},
+		{
+			name:   "no marker and the host never went down",
+			before: &BootState{CapturedAt: base},
+			after:  &BootState{CapturedAt: after},
+			cycle: Cycle{
+				Host: "web1", Watched: true, FullWindow: true,
+			},
+			wantStatus: StatusNotRebooted,
+			wantDetail: "never went down",
+		},
+		{
+			// Not watching a host is not the same as watching it stay up, and
+			// must not be read as evidence that it failed to reboot.
+			name:       "no marker and no observation stays unknown",
+			before:     &BootState{CapturedAt: base},
+			after:      &BootState{CapturedAt: after},
+			wantStatus: StatusUnknown,
+			wantDetail: "no boot_id or uptime marker",
+		},
+		{
+			// The drop window had not elapsed, so answering every sample so far
+			// proves nothing yet.
+			name:   "never dropped but the window had not elapsed",
+			before: &BootState{CapturedAt: base},
+			after:  &BootState{CapturedAt: after},
+			cycle: Cycle{
+				Host: "web1", Watched: true, FullWindow: false,
+			},
+			wantStatus: StatusUnknown,
+			wantDetail: "no boot_id or uptime marker",
+		},
+		{
+			name:       "an observed cycle rescues an unreadable probe",
+			before:     &BootState{BootID: "old", CapturedAt: base},
+			after:      nil,
+			cycle:      watchedCycle(base.Add(2*time.Second), base.Add(50*time.Second)),
+			wantStatus: StatusConfirmed,
+			wantDetail: "seen to go down",
+		},
+		{
+			// Markers stay authoritative: a boot_id that never changed is not
+			// overturned by anything the monitor thought it saw.
+			name:       "markers outrank the observation",
+			before:     &BootState{BootID: "same", CapturedAt: base},
+			after:      &BootState{BootID: "same", CapturedAt: after},
+			cycle:      watchedCycle(base.Add(4*time.Second), base.Add(47*time.Second)),
+			wantStatus: StatusNotRebooted,
+			wantDetail: "never went down",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := VerifyReboot("web1", tt.before, tt.after)
+			got := VerifyReboot("web1", tt.before, tt.after, tt.cycle)
 			if got.Host != "web1" {
 				t.Errorf("Host = %q, want web1", got.Host)
 			}
@@ -178,6 +238,14 @@ func TestVerifyReboot(t *testing.T) {
 				t.Errorf("Detail = %q, want it to contain %q", got.Detail, tt.wantDetail)
 			}
 		})
+	}
+}
+
+// watchedCycle is a completed power cycle, as the monitor would report it.
+func watchedCycle(down, back time.Time) Cycle {
+	return Cycle{
+		Host: "web1", Watched: true, FullWindow: true,
+		Dropped: true, Returned: true, DownAt: down, BackAt: back,
 	}
 }
 
