@@ -180,7 +180,7 @@ func TestVerifyReboot(t *testing.T) {
 			before: &BootState{CapturedAt: base},
 			after:  &BootState{CapturedAt: after},
 			cycle: Cycle{
-				Host: "web1", Watched: true, FullWindow: true,
+				Host: "web1", Watched: true, DropWaitElapsed: true,
 			},
 			wantStatus: StatusNotRebooted,
 			wantDetail: "never went down",
@@ -195,13 +195,13 @@ func TestVerifyReboot(t *testing.T) {
 			wantDetail: "no boot_id or uptime marker",
 		},
 		{
-			// The drop window had not elapsed, so answering every sample so far
+			// The drop wait had not run out, so answering every sample so far
 			// proves nothing yet.
-			name:   "never dropped but the window had not elapsed",
+			name:   "never dropped but the drop wait had not elapsed",
 			before: &BootState{CapturedAt: base},
 			after:  &BootState{CapturedAt: after},
 			cycle: Cycle{
-				Host: "web1", Watched: true, FullWindow: false,
+				Host: "web1", Watched: true, DropWaitElapsed: false,
 			},
 			wantStatus: StatusUnknown,
 			wantDetail: "no boot_id or uptime marker",
@@ -244,7 +244,7 @@ func TestVerifyReboot(t *testing.T) {
 // watchedCycle is a completed power cycle, as the monitor would report it.
 func watchedCycle(down, back time.Time) Cycle {
 	return Cycle{
-		Host: "web1", Watched: true, FullWindow: true,
+		Host: "web1", Watched: true, DropWaitElapsed: true,
 		Dropped: true, Returned: true, DownAt: down, BackAt: back,
 	}
 }

@@ -203,7 +203,7 @@ ansible-inventory-reboot-hosts -i inventory.yml | reboot-orchestrator --all --if
 | `--yes`, `-y`              | `false` | Bypass the interactive confirmation prompt                        |
 | `--if-needed`              | `false` | Reboot only the targeted hosts with a pending reboot              |
 | `--ping-timeout`           | `1s`    | Timeout for a single ping query                                   |
-| `--wait-drop`              | `15s`   | How long to wait for a host to drop before giving up on seeing it |
+| `--drop-wait`              | `15s`   | How long to wait for a host to drop before giving up on seeing it |
 | `--sample-interval`        | `1s`    | How often to probe each host while it reboots                     |
 | `--probe-timeout`          | `15s`   | Timeout for each SSH boot state probe                             |
 | `--skip-boot-verification` | `false` | Skip the SSH check that proves hosts rebooted                     |

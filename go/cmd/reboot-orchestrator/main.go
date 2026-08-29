@@ -169,7 +169,7 @@ func parseArgs(args []string) (options, []string, error) {
 		"do not read boot_id/uptime over SSH to confirm hosts actually rebooted")
 	fs.DurationVar(&opts.config.PingTimeout, "ping-timeout", time.Second,
 		"timeout for a single ping query")
-	fs.DurationVar(&opts.config.DropWait, "wait-drop", 15*time.Second,
+	fs.DurationVar(&opts.config.DropWait, "drop-wait", 15*time.Second,
 		"how long to wait for a host to drop off the network before giving up on seeing it")
 	fs.DurationVar(&opts.config.SampleInterval, "sample-interval", time.Second,
 		"how often to probe each host while it reboots")

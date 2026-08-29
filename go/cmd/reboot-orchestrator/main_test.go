@@ -39,7 +39,7 @@ func TestParseArgsFlags(t *testing.T) {
 		"--ssh-arg", "-o", "--ssh-arg", "LogLevel=ERROR",
 		"--if-needed",
 		"--skip-boot-verification",
-		"--wait-drop", "30s",
+		"--drop-wait", "30s",
 		"--sample-interval", "250ms",
 		"--probe-timeout", "5s",
 		"--yes",

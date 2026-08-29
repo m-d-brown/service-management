@@ -149,12 +149,23 @@ and back inside a single fixed wait.
 - **Sample timing.** A sweep is stamped with the instant it began rather than
   each probe reading the clock as it finishes, so a tier that went down together
   is recorded as having gone down together.
-- **Hosts that never drop.** A host still answering after its drop window is
+- **The drop wait.** `--drop-wait` is how long the monitor keeps watching for a
+  host to stop answering. It bounds the waiting only: a drop is recorded
+  whenever it is seen, early or late. What running out settles is the other
+  direction, where there is nothing to see — a host that answered every probe
+  for the whole drop wait is taken to have stayed up, and the run stops waiting
+  for a drop that is not coming. One drop wait covers the tier, not one per
+  host, and it replaces the fixed delay every tier used to pay.
+- **When the drop wait starts.** Sampling starts before anything goes down, but
+  the drop wait does not start with it: it starts once the tier's commands are
+  away. A drop wait started at the first sample would run out while the run was
+  still issuing the very commands it is timing, reporting hosts as never having
+  left a network they had not yet been asked to leave — and letting a tier count
+  as settled before a single host had gone anywhere.
+- **Hosts that never drop.** A host still answering after the drop wait is
   reported once and the run proceeds. The monitor states only what it saw;
   whether that means a failed reboot is decided by verification, which knows
   which hosts were actually targeted.
-- **Replaces the fixed wait.** `--wait-drop` bounds how long a host that never
-  stops answering is waited for, rather than being a delay every tier pays.
 
 ### 6. Boot State Verification
 
@@ -174,7 +185,7 @@ bracketed by a boot identity probe read from the host itself.
 - **Observation breaks ties**: Markers stay authoritative, being read from the
   host rather than seen from outside. Where they cannot settle the question, the
   observed cycle does: a host seen to go down and come back is confirmed, and
-  one that answered every probe for its whole drop window is reported as never
+  one that answered every probe for the whole drop wait is reported as never
   having rebooted. This is what makes appliances and switches — which expose
   neither marker — verifiable at all.
 - **Unverifiable hosts**: A host that neither exposes a marker nor was observed
@@ -308,7 +319,7 @@ the test suite is designed with high testability and side-effect isolation:
    interfaces — `Runner` for command execution and `Clock` for the passage of
    time — so tests substitute fakes for all SSH, ping, and waiting. The fake
    clock also makes the real waiting logic assertable: a test can check that a
-   tier waited exactly the configured drop delay plus one poll interval per
+   tier waited exactly the configured drop wait plus one poll interval per
    failed sweep, without any test taking that long.
 3. **Fleet Simulation**: End-to-end orchestration tests model hosts whose boot
    identity changes when they are rebooted, which is what allows the

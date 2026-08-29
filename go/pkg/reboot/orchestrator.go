@@ -13,8 +13,9 @@ import (
 type Config struct {
 	// PingTimeout bounds a single ICMP echo.
 	PingTimeout time.Duration
-	// DropWait bounds how long a host that never stops answering is waited
-	// for before the run accepts that it is not going to drop.
+	// DropWait is the drop wait: how long a host that never stops answering is
+	// waited for, from the moment a tier's commands are away, before the run
+	// accepts that it is not going to drop.
 	DropWait time.Duration
 	// SampleInterval is how often the monitor probes each host while it is
 	// rebooting. It sets the resolution of the drop: a host gone for less than
@@ -197,6 +198,10 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 			o.Config.sampleInterval(), o.Config.PingTimeout, o.Config.ProbeTimeout, o.Config.DropWait)
 
 		RebootHosts(o.writer(), o.Runner, tierHosts)
+
+		// Only now can a host still answering mean anything: every command that
+		// should take one down is away.
+		monitor.StartDropWait()
 
 		waitErr := monitor.WaitForReturn(ctx)
 		monitor.Stop()

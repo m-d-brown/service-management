@@ -84,6 +84,7 @@ func runMonitor(t *testing.T, host string, script []reachability, dropWait time.
 
 	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
 		[]Host{{Name: host}}, time.Second, time.Second, time.Second, dropWait)
+	monitor.StartDropWait()
 	if err := monitor.WaitForReturn(context.Background()); err != nil {
 		t.Fatalf("WaitForReturn() = %v, want nil", err)
 	}
@@ -145,7 +146,7 @@ func TestMonitorReportsAHostThatNeverDrops(t *testing.T) {
 		t.Errorf("Cycle = %+v, want no drop observed", cycle)
 	}
 	if !cycle.StayedUp() {
-		t.Errorf("StayedUp() = false, want a host that answered its whole window")
+		t.Errorf("StayedUp() = false, want a host that answered the whole drop wait")
 	}
 	if !strings.Contains(out, "[warn] web1 answered every probe") {
 		t.Errorf("output = %q, want the never-dropped warning", out)
@@ -174,6 +175,7 @@ func TestMonitorStopsSamplingWhenStopped(t *testing.T) {
 	runner := scriptedRunner(nil)
 	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
 		[]Host{{Name: "web1"}}, time.Second, time.Second, time.Second, time.Second)
+	monitor.StartDropWait()
 	if err := monitor.WaitForReturn(context.Background()); err != nil {
 		t.Fatalf("WaitForReturn() = %v, want nil", err)
 	}
@@ -211,6 +213,7 @@ func TestMonitorReportsEachHostSeparately(t *testing.T) {
 	})
 	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
 		[]Host{{Name: "vm-a"}, {Name: "vm-b"}}, time.Second, time.Second, time.Second, 3*time.Second)
+	monitor.StartDropWait()
 	if err := monitor.WaitForReturn(context.Background()); err != nil {
 		t.Fatalf("WaitForReturn() = %v, want nil", err)
 	}
@@ -229,6 +232,7 @@ func TestMonitorWithNoHostsSettlesImmediately(t *testing.T) {
 	var out bytes.Buffer
 	monitor := StartMonitor(context.Background(), &out, scriptedRunner(nil), newFakeClock(),
 		nil, time.Second, time.Second, time.Second, time.Minute)
+	monitor.StartDropWait()
 	if err := monitor.WaitForReturn(context.Background()); err != nil {
 		t.Fatalf("WaitForReturn() = %v, want nil", err)
 	}
@@ -236,6 +240,48 @@ func TestMonitorWithNoHostsSettlesImmediately(t *testing.T) {
 
 	if out.Len() != 0 {
 		t.Errorf("output = %q, want nothing said about an empty watch list", out.String())
+	}
+}
+
+func TestMonitorDropWaitStartsOnlyWhenTold(t *testing.T) {
+	// Sampling starts before anything is powered down, so the drop wait cannot
+	// start with it: it would run out while the run was still issuing the
+	// commands it is timing. That is what warned about hosts which had not been
+	// asked to go anywhere yet, and let a tier settle before any host had.
+	clock := newFakeClock()
+	m := &Monitor{clock: clock, dropWait: 3 * time.Second}
+
+	if m.dropWaitElapsed(clock.Now().Add(time.Hour)) {
+		t.Error("a drop wait that never started counted as elapsed, an hour or not")
+	}
+
+	// Started, it runs for the configured wait and no longer.
+	m.StartDropWait()
+	if m.dropWaitElapsed(clock.Now().Add(2 * time.Second)) {
+		t.Error("the drop wait elapsed inside the wait it was started for")
+	}
+	if !m.dropWaitElapsed(clock.Now().Add(4 * time.Second)) {
+		t.Error("the drop wait never elapsed, a full wait past starting")
+	}
+}
+
+func TestMonitorJudgesNoHostBeforeTheDropWaitStarts(t *testing.T) {
+	// Until the drop wait starts the monitor still watches and still reports
+	// drops; what it must not do is conclude anything from a host answering.
+	var out bytes.Buffer
+	runner := scriptedRunner(map[string][]reachability{"web1": {up}})
+	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
+		[]Host{{Name: "web1"}}, time.Second, time.Second, time.Second, time.Second)
+	defer monitor.Stop()
+
+	if cycle := monitor.Cycles()["web1"]; cycle.DropWaitElapsed {
+		t.Errorf("Cycle = %+v, want no elapsed drop wait before one started", cycle)
+	}
+	if cycle := monitor.Cycles()["web1"]; cycle.StayedUp() {
+		t.Error("StayedUp() = true before the host had been asked to go anywhere")
+	}
+	if strings.Contains(out.String(), "[warn]") {
+		t.Errorf("output = %q, want no verdict before the drop wait started", out.String())
 	}
 }
 
@@ -249,9 +295,9 @@ func TestCycleZeroValueIsNotEvidence(t *testing.T) {
 	if unwatched.StayedUp() {
 		t.Error("StayedUp() = true for an unwatched host")
 	}
-	// Nor has one whose drop window had not yet elapsed.
+	// Nor has one whose drop wait had not run out.
 	partial := Cycle{Host: "web1", Watched: true}
 	if partial.StayedUp() {
-		t.Error("StayedUp() = true before the drop window elapsed")
+		t.Error("StayedUp() = true before the drop wait elapsed")
 	}
 }

@@ -20,9 +20,9 @@ import (
 //
 // Catching that requires sampling to be running before the host is told to go
 // down and to keep running while it does, which is why the monitor owns a
-// goroutine rather than being a phase of the run. The window it has to catch is
-// the whole reason: a fast guest can be gone and back inside what used to be a
-// single blind fifteen-second sleep.
+// goroutine rather than being a phase of the run. How briefly a host can be
+// gone is the whole reason: a fast guest can be away and back inside what used
+// to be a single blind fifteen-second sleep.
 
 // monitorConcurrency bounds how many hosts the monitor probes at once, so a
 // large tier does not open a connection per host on every sample.
@@ -30,17 +30,18 @@ const monitorConcurrency = 8
 
 // Cycle is what the monitor saw of one host's power cycle.
 //
-// Watched and FullWindow exist so the zero value cannot be mistaken for
+// Watched and DropWaitElapsed exist so the zero value cannot be mistaken for
 // evidence: a host nobody watched has not been seen to stay up, and neither has
-// one whose drop window had not yet elapsed when the run gave up on it.
+// one whose drop wait had not run out when the run gave up on it.
 type Cycle struct {
 	// Host is the host that was watched.
 	Host string
 	// Watched reports that the monitor actually sampled this host.
 	Watched bool
-	// FullWindow reports that the drop window elapsed while watching, so a
-	// host that never dropped had its full chance to.
-	FullWindow bool
+	// DropWaitElapsed reports that the drop wait ran out while watching, so a
+	// host that never dropped had its full chance to. It is a fact about the
+	// run rather than this host: one drop wait covers the whole tier.
+	DropWaitElapsed bool
 	// Dropped reports whether the host was seen to stop answering at all.
 	Dropped bool
 	// Returned reports whether it answered SSH again after dropping.
@@ -55,10 +56,10 @@ type Cycle struct {
 // is the observation that proves a reboot without reading any boot marker.
 func (c Cycle) Complete() bool { return c.Watched && c.Dropped && c.Returned }
 
-// StayedUp reports that the host answered every sample for its whole drop
-// window. Nothing was ever asked of it that it did not answer, so it cannot
-// have restarted in that time.
-func (c Cycle) StayedUp() bool { return c.Watched && c.FullWindow && !c.Dropped }
+// StayedUp reports that the host answered every sample for the whole drop
+// wait. Nothing was ever asked of it that it did not answer, so it cannot have
+// restarted in that time.
+func (c Cycle) StayedUp() bool { return c.Watched && c.DropWaitElapsed && !c.Dropped }
 
 // DownFor is how long the host was unreachable, or zero if it never completed
 // a cycle.
@@ -98,18 +99,30 @@ type watch struct {
 // interchangeable: the kernel answers ping as soon as its network stack is up,
 // often half a minute before sshd will accept a connection, so a host declared
 // back on ping alone would be handed to the next tier before it can be used.
+//
+// The drop wait is how long the monitor keeps watching for a host to stop
+// answering, counted from StartDropWait — the moment the tier's commands are
+// away. It bounds the waiting only: a drop is recorded whenever it is seen,
+// early or late. What running out settles is the other direction, where there
+// is nothing to see: a host that answered every probe for the whole drop wait
+// is taken to have stayed up, and the run stops waiting for a drop that is not
+// coming. One drop wait covers the tier, not one per host.
 type Monitor struct {
-	out          io.Writer
-	runner       Runner
-	clock        Clock
-	interval     time.Duration
-	pingTimeout  time.Duration
-	sshTimeout   time.Duration
-	dropDeadline time.Time
+	out         io.Writer
+	runner      Runner
+	clock       Clock
+	interval    time.Duration
+	pingTimeout time.Duration
+	sshTimeout  time.Duration
+	dropWait    time.Duration
 
 	mu    sync.Mutex
 	order []string
 	seen  map[string]*watch
+	// dropDeadline is when the drop wait runs out, after which a host that is
+	// still answering stops being waited for. It is zero until StartDropWait,
+	// which is not the same as elapsed.
+	dropDeadline time.Time
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -124,7 +137,8 @@ type Monitor struct {
 // The first sample is taken synchronously so the caller knows the baseline is
 // recorded before it powers anything down; sampling then continues in the
 // background until Stop. dropWait bounds how long a host that never stops
-// answering is waited for before the run accepts that it is not going to drop.
+// answering is waited for before the run accepts that it is not going to drop —
+// counted from StartDropWait, not from here.
 func StartMonitor(
 	ctx context.Context,
 	out io.Writer,
@@ -134,17 +148,17 @@ func StartMonitor(
 	interval, pingTimeout, sshTimeout, dropWait time.Duration,
 ) *Monitor {
 	m := &Monitor{
-		out:          out,
-		runner:       runner,
-		clock:        clock,
-		interval:     interval,
-		pingTimeout:  pingTimeout,
-		sshTimeout:   sshTimeout,
-		dropDeadline: clock.Now().Add(dropWait),
-		seen:         make(map[string]*watch, len(hosts)),
-		stop:         make(chan struct{}),
-		exited:       make(chan struct{}),
-		settled:      make(chan struct{}),
+		out:         out,
+		runner:      runner,
+		clock:       clock,
+		interval:    interval,
+		pingTimeout: pingTimeout,
+		sshTimeout:  sshTimeout,
+		dropWait:    dropWait,
+		seen:        make(map[string]*watch, len(hosts)),
+		stop:        make(chan struct{}),
+		exited:      make(chan struct{}),
+		settled:     make(chan struct{}),
 	}
 	for _, host := range hosts {
 		if _, ok := m.seen[host.Name]; ok {
@@ -185,6 +199,29 @@ func (m *Monitor) loop(ctx context.Context) {
 	}
 }
 
+// StartDropWait starts the clock on hosts that never leave the network.
+//
+// The drop wait cannot start when sampling does. Sampling deliberately starts
+// first, before anything has been asked to go down, so that the drop is
+// observed rather than inferred — but that leaves the tier's reboot commands
+// still to be dispatched, behind a synchronous first sweep that probes every
+// host it is watching. A drop wait started there runs out while the run is
+// still issuing the very commands it is timing, which reads as every host
+// having answered every probe — and, worse, lets the run conclude a tier has
+// settled before a single host has gone anywhere.
+func (m *Monitor) StartDropWait() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dropDeadline = m.clock.Now().Add(m.dropWait)
+}
+
+// dropWaitElapsed reports whether the drop wait has started and since run out.
+// A drop wait that never started has not elapsed: nothing has been asked to
+// reboot yet, so a host still answering says nothing. Callers hold mu.
+func (m *Monitor) dropWaitElapsed(at time.Time) bool {
+	return !m.dropDeadline.IsZero() && at.After(m.dropDeadline)
+}
+
 // Stop ends sampling and waits for the sampler to finish.
 func (m *Monitor) Stop() {
 	m.stopOnce.Do(func() { close(m.stop) })
@@ -192,7 +229,7 @@ func (m *Monitor) Stop() {
 }
 
 // WaitForReturn blocks until every watched host has come back, or until the
-// hosts that never dropped have been given their full drop window.
+// hosts that never dropped have been given the full drop wait.
 func (m *Monitor) WaitForReturn(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
@@ -210,17 +247,17 @@ func (m *Monitor) WaitForReturn(ctx context.Context) error {
 func (m *Monitor) Cycles() map[string]Cycle {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	fullWindow := m.clock.Now().After(m.dropDeadline)
+	elapsed := m.dropWaitElapsed(m.clock.Now())
 	out := make(map[string]Cycle, len(m.seen))
 	for name, w := range m.seen {
 		out[name] = Cycle{
-			Host:       name,
-			Watched:    true,
-			FullWindow: fullWindow,
-			Dropped:    w.dropped,
-			Returned:   w.returned,
-			DownAt:     w.downAt,
-			BackAt:     w.backAt,
+			Host:            name,
+			Watched:         true,
+			DropWaitElapsed: elapsed,
+			Dropped:         w.dropped,
+			Returned:        w.returned,
+			DownAt:          w.downAt,
+			BackAt:          w.backAt,
 		}
 	}
 	return out
@@ -348,8 +385,8 @@ func (m *Monitor) sshAlive(ctx context.Context, host Host) bool {
 	return err == nil
 }
 
-// warnNeverDropped reports each host that answered continuously past its drop
-// window, once per host.
+// warnNeverDropped reports each host that answered continuously past the drop
+// wait, once per host.
 //
 // It states only what was seen, not what it means. A watched host is not
 // necessarily one being rebooted — dependents are watched because they go down
@@ -362,7 +399,7 @@ func (m *Monitor) warnNeverDropped(at time.Time) []string {
 	var lines []string
 	for _, name := range m.order {
 		w := m.seen[name]
-		if w.dropped || w.warned || !at.After(m.dropDeadline) {
+		if w.dropped || w.warned || !m.dropWaitElapsed(at) {
 			continue
 		}
 		w.warned = true
@@ -373,7 +410,7 @@ func (m *Monitor) warnNeverDropped(at time.Time) []string {
 }
 
 // allSettled reports whether every host has finished as far as it ever will:
-// back from a drop, or answering after its drop window elapsed without one.
+// back from a drop, or answering after the drop wait ran out without one.
 func (m *Monitor) allSettled(at time.Time) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -381,7 +418,7 @@ func (m *Monitor) allSettled(at time.Time) bool {
 		if w.returned {
 			continue
 		}
-		if w.dropped || !w.up || !at.After(m.dropDeadline) {
+		if w.dropped || !w.up || !m.dropWaitElapsed(at) {
 			return false
 		}
 	}
