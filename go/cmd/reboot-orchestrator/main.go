@@ -173,8 +173,6 @@ func parseArgs(args []string) (options, []string, error) {
 		"how long to wait for a host to drop off the network before giving up on seeing it")
 	fs.DurationVar(&opts.config.SampleInterval, "sample-interval", time.Second,
 		"how often to probe each host while it reboots")
-	fs.DurationVar(&opts.config.ForceOffWait, "force-off-wait", 15*time.Second,
-		"how long a host gets to halt gracefully before its force-off command runs")
 	fs.DurationVar(&opts.config.ProbeTimeout, "probe-timeout", 15*time.Second,
 		"timeout for each SSH boot state probe")
 	fs.Usage = func() {
@@ -188,9 +186,7 @@ func parseArgs(args []string) (options, []string, error) {
 				"  addr       address to ping and ssh to (default: the host name)\n"+
 				"  user       ssh login user (default: --user)\n"+
 				"  ssh-arg    extra ssh argument; repeatable\n"+
-				"  after      reboot this host only once the named host is back; repeatable\n"+
-				"  force-off  HOST:COMMAND to cut this host's power if it hangs on\n"+
-				"             poweroff, as in force-off=hv1:qm stop 101\n\n"+
+				"  after      reboot this host only once the named host is back; repeatable\n\n"+
 				"Specs also arrive on stdin, one per line, which is how a topology kept in\n"+
 				"an Ansible inventory reaches this tool:\n\n"+
 				"  ansible-inventory-reboot-hosts -i inventory.yml | %s vm-a vm-b\n\n"+

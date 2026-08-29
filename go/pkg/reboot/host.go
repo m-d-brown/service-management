@@ -27,8 +27,8 @@ import (
 // Host is one machine the orchestrator knows about.
 //
 // A host is either a target (named for reboot) or context: context hosts are
-// never rebooted, but they can be depended on, act as a force-off delegate, and
-// are waited on when a host they sit behind goes down.
+// never rebooted, but they can be depended on, and are waited on when a host
+// they sit behind goes down.
 type Host struct {
 	// Name identifies the host and is how other hosts refer to it.
 	Name string
@@ -42,32 +42,6 @@ type Host struct {
 	// is rebooted. References to hosts outside the target set are ignored when
 	// building tiers, so a partial run stays possible.
 	After []string
-	// ForceOff is how to cut this host's power from elsewhere when it cannot be
-	// trusted to power down on its own. The zero value means it can.
-	ForceOff ForceOff
-}
-
-// ForceOff says how to power a host down from outside itself.
-//
-// Some machines — most often virtual guests with a broken ACPI implementation —
-// halt every filesystem and then never complete the power-down sequence. From
-// the outside they are still running, which stalls whatever is waiting for them
-// to stop: a hypervisor's own reboot sits on a shutdown timeout until it gives
-// up. The cure is to ask something else to cut the power.
-//
-// What that takes is entirely site-specific, so this package does not know how:
-// it runs the command it is given, on the host it is given, and stays out of the
-// way. On Proxmox that is "qm stop 101" for a VM or "pct stop 105" for a
-// container; on libvirt, "virsh destroy guest"; on a bare metal host wired to a
-// switched PDU, whatever that PDU's CLI wants.
-type ForceOff struct {
-	// Via is the host to run Command on — typically the hypervisor, but any
-	// host that can cut the power will do.
-	Via string
-	// Command is run verbatim on Via, through the same SSH path as every other
-	// command, and is expected to leave the host powered off. Include sudo if
-	// the login user needs it.
-	Command string
 }
 
 // Target returns the address to connect to, falling back to the host name.
@@ -76,11 +50,6 @@ func (h Host) Target() string {
 		return h.Addr
 	}
 	return h.Name
-}
-
-// HasForceOff reports whether the host can be powered down from outside.
-func (h Host) HasForceOff() bool {
-	return h.ForceOff.Via != "" && h.ForceOff.Command != ""
 }
 
 // Hosts maps host names to their definitions.
@@ -127,9 +96,6 @@ func Merge(base, overlay Host) Host {
 	if len(overlay.After) > 0 {
 		merged.After = overlay.After
 	}
-	if overlay.HasForceOff() {
-		merged.ForceOff = overlay.ForceOff
-	}
 	return merged
 }
 
@@ -143,16 +109,6 @@ func (hs Hosts) Validate() error {
 			}
 			if after == name {
 				return fmt.Errorf("host %q cannot reboot after itself", name)
-			}
-		}
-		if via := host.ForceOff.Via; via != "" {
-			if _, ok := hs[via]; !ok {
-				return fmt.Errorf("host %q is forced off via %q, which is not a known host", name, via)
-			}
-			// A host that has hung on power off cannot be relied on to run the
-			// command that cuts its own power.
-			if via == name {
-				return fmt.Errorf("host %q cannot force itself off", name)
 			}
 		}
 	}

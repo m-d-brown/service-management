@@ -36,7 +36,7 @@ func main() {
 			"Usage: %s [--inventory FILE]\n\n"+
 				"Convert an Ansible YAML inventory into reboot-orchestrator host specs,\n"+
 				"one per line on stdout. Reads ip_addr/ansible_host, ansible_user,\n"+
-				"ansible_ssh_common_args, depends_on, and force_off.\n\n"+
+				"ansible_ssh_common_args, and depends_on.\n\n"+
 				"Pipe the result into reboot-orchestrator:\n"+
 				"  %s -i inventory.yml | reboot-orchestrator vm-a vm-b\n\nFlags:\n",
 			os.Args[0], os.Args[0])

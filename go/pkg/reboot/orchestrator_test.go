@@ -149,7 +149,6 @@ func testConfig() Config {
 	return Config{
 		PingTimeout:     time.Second,
 		DropWait:        15 * time.Second,
-		ForceOffWait:    15 * time.Second,
 		ProbeTimeout:    15 * time.Second,
 		SampleInterval:  time.Second,
 		VerifyBootState: true,
@@ -287,96 +286,6 @@ func TestRunWaitsForUntargetedDependents(t *testing.T) {
 	if got := runner.countMatching("ping -c 1 -W 1 10.0.0.21"); got == 0 {
 		t.Error("vm-a was never pinged, want the untargeted dependent waited for")
 	}
-	if got := rebootedDestinations(runner); len(got) != 1 || got[0] != "10.0.0.5" {
-		t.Errorf("rebooted %v, want only the targeted hypervisor", got)
-	}
-}
-
-func TestRunForcesGuestOffBeforeDelegateReboots(t *testing.T) {
-	// The guest is powered off while its hypervisor's tier runs, even though
-	// the guest itself reboots later: a hung guest stalls the hypervisor's
-	// shutdown, which is the problem force-off exists for.
-	f := newFleet("10.0.0.5", "10.0.0.21")
-	runner := f.runner()
-	var out bytes.Buffer
-
-	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &out}
-	plan := newPlan(t, []string{
-		"hv1,addr=10.0.0.5",
-		"vm-a,addr=10.0.0.21,after=hv1,force-off=hv1:qm stop 101",
-	})
-
-	if _, err := orch.Run(context.Background(), plan); err != nil {
-		t.Fatal(err)
-	}
-
-	haltIndex, hypervisorRebootIndex := -1, -1
-	for i, c := range runner.calls {
-		switch {
-		case strings.Contains(c.remote(), "poweroff") && haltIndex < 0:
-			haltIndex = i
-		case strings.Contains(c.remote(), "reboot") && destination(c) == "10.0.0.5" && hypervisorRebootIndex < 0:
-			hypervisorRebootIndex = i
-		}
-	}
-	if haltIndex < 0 {
-		t.Fatal("the guest was never asked to power off")
-	}
-	if hypervisorRebootIndex < 0 {
-		t.Fatal("the hypervisor was never rebooted")
-	}
-	if haltIndex > hypervisorRebootIndex {
-		t.Error("the guest was halted after the hypervisor rebooted, want it before")
-	}
-	if got := runner.countMatching("qm stop 101"); got != 1 {
-		t.Errorf("issued %d force-offs, want exactly 1", got)
-	}
-}
-
-func TestRunForcesHostOffOnlyOnce(t *testing.T) {
-	// The guest qualifies twice — once for its delegate's tier and once for
-	// its own — but must not be power cycled a second time.
-	f := newFleet("10.0.0.5", "10.0.0.21")
-	runner := f.runner()
-	var out bytes.Buffer
-
-	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &out}
-	plan := newPlan(t, []string{
-		"hv1,addr=10.0.0.5",
-		"vm-a,addr=10.0.0.21,after=hv1,force-off=hv1:qm stop 101",
-	})
-
-	if _, err := orch.Run(context.Background(), plan); err != nil {
-		t.Fatal(err)
-	}
-	if got := runner.countMatching("qm stop 101"); got != 1 {
-		t.Errorf("issued %d force-offs, want exactly 1", got)
-	}
-}
-
-func TestRunForcesOffUntargetedGuests(t *testing.T) {
-	// vm-a is context only — it is never rebooted — but it still goes down with
-	// the hypervisor under it, so a hang there stalls exactly the shutdown
-	// force-off protects. Skipping it would make the feature unreliable in the
-	// piped-inventory workflow, where most hosts are context.
-	f := newFleet("10.0.0.5", "10.0.0.21")
-	runner := f.runner()
-	var out bytes.Buffer
-
-	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &out}
-	plan := newPlan(t, []string{
-		"hv1,addr=10.0.0.5",
-		"vm-a,addr=10.0.0.21,after=hv1,force-off=hv1:qm stop 101",
-	}, "hv1")
-
-	if _, err := orch.Run(context.Background(), plan); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := runner.countMatching("qm stop 101"); got != 1 {
-		t.Errorf("issued %d force-offs, want the untargeted guest covered", got)
-	}
-	// It is powered off, not rebooted: it was never a target.
 	if got := rebootedDestinations(runner); len(got) != 1 || got[0] != "10.0.0.5" {
 		t.Errorf("rebooted %v, want only the targeted hypervisor", got)
 	}

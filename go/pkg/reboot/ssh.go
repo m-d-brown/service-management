@@ -1,10 +1,8 @@
 package reboot
 
 import (
-	"context"
 	"io"
 	"strings"
-	"time"
 )
 
 // baseSSHArgs are applied to every connection. BatchMode keeps a host that
@@ -50,44 +48,6 @@ func RebootHosts(out io.Writer, runner Runner, hosts []Host) {
 		if err := runner.Start("ssh", args...); err != nil {
 			report(out, "  WARNING: failed to issue reboot to %s: %v\n", host.Name, err)
 		}
-	}
-}
-
-// ForceHostOff powers down a host that cannot be trusted to power itself off.
-//
-// The host is asked to halt gracefully first and given time to do it, so
-// filesystems are flushed and services stopped in the ordinary way; only then is
-// its power cut from the delegate. Cutting first would make every such host an
-// unclean shutdown, which is a worse problem than the one being solved.
-func ForceHostOff(
-	ctx context.Context,
-	out io.Writer,
-	runner Runner,
-	clock Clock,
-	host, delegate Host,
-	haltWait time.Duration,
-) {
-	report(out, "Halting %q gracefully before forcing it off...\n", host.Name)
-	haltArgs := sshCommand(host, "sudo poweroff || poweroff")
-	report(out, "  $ %s\n", FormatCommand("ssh", haltArgs...))
-	if err := runner.Start("ssh", haltArgs...); err != nil {
-		report(out, "  WARNING: failed to issue poweroff to %s: %v\n", host.Name, err)
-	}
-
-	report(out, "Waiting %s for %q to power down...\n", haltWait, host.Name)
-	clock.Sleep(haltWait)
-
-	report(out, "Forcing %q off via %q...\n", host.Name, delegate.Name)
-	// The command is the operator's own and runs verbatim: this package has no
-	// way to know whether the delegate's CLI wants sudo, a wrapper, or neither,
-	// and second-guessing it would break commands that are already correct.
-	stopArgs := sshCommand(delegate, host.ForceOff.Command)
-	report(out, "  $ %s\n", FormatCommand("ssh", stopArgs...))
-	// A failure here is reported rather than fatal: the host may well have
-	// powered off gracefully already, which is exactly the case where the
-	// force-off command finds nothing to stop and says so.
-	if _, err := runner.Run(ctx, "", "ssh", stopArgs...); err != nil {
-		report(out, "  WARNING: force-off of %s via %s failed: %v\n", host.Name, delegate.Name, err)
 	}
 }
 

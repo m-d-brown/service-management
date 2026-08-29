@@ -1,8 +1,9 @@
 package reboot
 
 // Test doubles shared across this package's tests. Every side effect the
-// orchestrator has — SSH, ping, sleeping — goes through Runner or Clock, so
-// substituting these two keeps the whole engine testable without a network.
+// orchestrator has — SSH, ping, the passage of time — goes through Runner or
+// Clock, so substituting these two keeps the whole engine testable without a
+// network.
 
 import (
 	"context"
@@ -118,14 +119,12 @@ func (f *fakeRunner) countMatching(substr string) int {
 	return n
 }
 
-// fakeClock advances only when something sleeps or ticks, so tests exercise the
-// real waiting logic instantly and can assert on how long was waited.
+// fakeClock advances only when something ticks, so tests exercise the real
+// waiting logic instantly and can assert on how long was waited.
 type fakeClock struct {
 	mu sync.Mutex
 	// now is the current instant.
 	now time.Time
-	// slept is every duration slept, in order.
-	slept []time.Duration
 	// interval is the period the monitor asked its ticker for.
 	interval time.Duration
 	// ticks delivers monitor samples. It is unbuffered, so a send completes
@@ -186,23 +185,4 @@ func (f *fakeClock) Now() time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.now
-}
-
-// Sleep advances the fake time without blocking.
-func (f *fakeClock) Sleep(d time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.slept = append(f.slept, d)
-	f.now = f.now.Add(d)
-}
-
-// total returns the sum of every sleep.
-func (f *fakeClock) total() time.Duration {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var sum time.Duration
-	for _, d := range f.slept {
-		sum += d
-	}
-	return sum
 }

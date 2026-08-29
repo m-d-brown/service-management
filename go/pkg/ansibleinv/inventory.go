@@ -43,16 +43,6 @@ type hostVars struct {
 	SSHCommonArgs scalar `yaml:"ansible_ssh_common_args"`
 	// DependsOn names the hosts that must be back online first.
 	DependsOn []string `yaml:"depends_on"`
-	// ForceOff says how to cut this host's power from elsewhere.
-	ForceOff *forceOff `yaml:"force_off"`
-}
-
-// forceOff is the force_off mapping.
-type forceOff struct {
-	// DelegateTo is the host to run Command on.
-	DelegateTo scalar `yaml:"delegate_to"`
-	// Command is what to run there to cut the power.
-	Command scalar `yaml:"command"`
 }
 
 // scalar is a YAML scalar read as text whatever its type. An inventory writes
@@ -169,17 +159,6 @@ func hostFromVars(name string, vars hostVars) (reboot.Host, error) {
 		host.SSHArgs = words
 	}
 
-	if vars.ForceOff != nil {
-		host.ForceOff = reboot.ForceOff{
-			Via:     string(vars.ForceOff.DelegateTo),
-			Command: string(vars.ForceOff.Command),
-		}
-		if !host.HasForceOff() {
-			return reboot.Host{}, fmt.Errorf(
-				"host %q: force_off needs both delegate_to and command", name)
-		}
-	}
-
 	for _, dep := range host.After {
 		if dep == "" {
 			return reboot.Host{}, fmt.Errorf("host %q: depends_on contains an empty entry", name)
@@ -211,10 +190,6 @@ func validateDependencies(hosts []reboot.Host) error {
 				return fmt.Errorf("host %q depends on %q, which does not exist in the inventory",
 					host.Name, dep)
 			}
-		}
-		if via := host.ForceOff.Via; via != "" && !known[via] {
-			return fmt.Errorf("host %q is forced off via %q, which does not exist in the inventory",
-				host.Name, via)
 		}
 	}
 	return nil

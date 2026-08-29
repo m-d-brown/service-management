@@ -21,8 +21,8 @@ type Runner interface {
 	// context bounds how long the command may take.
 	Run(ctx context.Context, stdin, name string, args ...string) (string, error)
 	// Start dispatches a command without waiting for it to finish. Commands
-	// that sever their own connection — a reboot, a power off — are started
-	// this way so a dropped SSH session cannot stall the run.
+	// that sever their own connection — a reboot — are started this way so a
+	// dropped SSH session cannot stall the run.
 	Start(name string, args ...string) error
 }
 
@@ -75,8 +75,6 @@ func (ExecRunner) Start(name string, args ...string) error {
 type Clock interface {
 	// Now reports the current time.
 	Now() time.Time
-	// Sleep blocks for the given duration.
-	Sleep(d time.Duration)
 	// Ticker delivers a value every d until the returned stop is called. It is
 	// what lets the reboot monitor sample on its own schedule while the rest of
 	// the run proceeds, and what lets a test drive that sampling one step at a
@@ -89,9 +87,6 @@ type RealClock struct{}
 
 // Now reports the current time.
 func (RealClock) Now() time.Time { return time.Now() }
-
-// Sleep blocks for the given duration.
-func (RealClock) Sleep(d time.Duration) { time.Sleep(d) }
 
 // Ticker delivers a value every d until stopped.
 func (RealClock) Ticker(d time.Duration) (<-chan time.Time, func()) {
