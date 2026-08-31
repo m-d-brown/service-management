@@ -125,6 +125,6 @@ func PrintProbeReport(out io.Writer, statuses []RebootStatus) {
 	}
 	report(out, "\n%d hosts checked, %d need a reboot:\n", len(statuses), pending)
 	for _, status := range statuses {
-		report(out, "  %s — %s\n", status.Host, status.Reason)
+		reportHost(out, status.Host, "%s", status.Reason)
 	}
 }

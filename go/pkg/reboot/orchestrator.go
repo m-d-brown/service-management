@@ -129,11 +129,11 @@ func (o *Orchestrator) partitionPending(statuses []RebootStatus, announceSkips b
 		case NeedUnknown:
 			unprobed = append(unprobed, status)
 			if announceSkips {
-				report(o.writer(), "Skipping %s: %s\n", status.Host, status.Reason)
+				reportHost(o.writer(), status.Host, "skipping — %s", status.Reason)
 			}
 		case NeedNo:
 			if announceSkips {
-				report(o.writer(), "Skipping %s: no longer needs a reboot.\n", status.Host)
+				reportHost(o.writer(), status.Host, "skipping — no longer needs a reboot")
 			}
 		}
 	}
@@ -243,8 +243,8 @@ func (o *Orchestrator) captureBaselines(ctx context.Context, hosts []Host) map[s
 	for _, host := range hosts {
 		state := CaptureBootState(ctx, o.writer(), o.Runner, o.Clock, host, o.Config.ProbeTimeout)
 		if state == nil {
-			report(o.writer(), "  WARNING: cannot read the boot state of %q over SSH. The reboot "+
-				"command will likely fail the same way, and the reboot cannot be verified.\n", host.Name)
+			reportHost(o.writer(), host.Name, "WARNING: cannot read the boot state over SSH. The reboot "+
+				"command will likely fail the same way, and the reboot cannot be verified.")
 		}
 		baselines[host.Name] = state
 	}
@@ -261,11 +261,11 @@ func (o *Orchestrator) verifyTier(ctx context.Context, hosts []Host,
 		result := VerifyReboot(host.Name, baselines[host.Name], after, cycles[host.Name])
 		switch result.Status {
 		case StatusConfirmed:
-			report(o.writer(), "[✓] %s rebooted: %s\n", host.Name, result.Detail)
+			reportHost(o.writer(), host.Name, "[✓] rebooted: %s", result.Detail)
 		case StatusNotRebooted:
-			report(o.writer(), "[✗] WARNING: %s did NOT reboot: %s\n", host.Name, result.Detail)
+			reportHost(o.writer(), host.Name, "[✗] WARNING: did NOT reboot: %s", result.Detail)
 		case StatusUnknown:
-			report(o.writer(), "[?] WARNING: %s reboot unverified: %s\n", host.Name, result.Detail)
+			reportHost(o.writer(), host.Name, "[?] WARNING: reboot unverified: %s", result.Detail)
 		}
 		results = append(results, result)
 	}
@@ -295,10 +295,10 @@ func (o *Orchestrator) printSummary(results []RebootVerification) {
 	report(o.writer(), "Confirmed rebooted: %d  Not rebooted: %d  Unverified: %d\n",
 		len(confirmed), len(failed), len(unknown))
 	for _, result := range failed {
-		report(o.writer(), "  [✗] %s: %s\n", result.Host, result.Detail)
+		reportHost(o.writer(), result.Host, "[✗] %s", result.Detail)
 	}
 	for _, result := range unknown {
-		report(o.writer(), "  [?] %s: %s\n", result.Host, result.Detail)
+		reportHost(o.writer(), result.Host, "[?] %s", result.Detail)
 	}
 
 	if unconfirmed := len(failed) + len(unknown); unconfirmed > 0 {

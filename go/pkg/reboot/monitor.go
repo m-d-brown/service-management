@@ -2,7 +2,6 @@ package reboot
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"slices"
 	"sync"
@@ -173,7 +172,7 @@ func StartMonitor(
 		report(out, "Watching %s for the reboot (sampling every %s)...\n",
 			joinNames(m.hosts()), interval)
 		for _, host := range m.hosts() {
-			report(out, "  $ %s\n", FormatCommand("ping", pingArgs(host.Target(), pingTimeout)...))
+			reportHost(out, host.Name, "$ %s", FormatCommand("ping", pingArgs(host.Target(), pingTimeout)...))
 		}
 	}
 
@@ -347,7 +346,7 @@ func (m *Monitor) probe(ctx context.Context, w *watch, at time.Time) []string {
 		m.mu.Lock()
 		w.up, w.dropped, w.downAt = false, true, at
 		m.mu.Unlock()
-		return []string{fmt.Sprintf("[down] %s stopped answering at %s\n", host.Name, stamp(at))}
+		return []string{hostLine(host.Name, "[down] stopped answering at %s", stamp(at))}
 	}
 
 	if !PingHost(ctx, m.runner, host, m.pingTimeout) {
@@ -359,8 +358,8 @@ func (m *Monitor) probe(ctx context.Context, w *watch, at time.Time) []string {
 		m.mu.Lock()
 		w.pingBack = true
 		m.mu.Unlock()
-		lines = append(lines, fmt.Sprintf("[ping] %s answers ping again at %s; waiting for SSH\n",
-			host.Name, stamp(at)))
+		lines = append(lines,
+			hostLine(host.Name, "[ping] answers ping again at %s; waiting for SSH", stamp(at)))
 	}
 
 	if !m.sshAlive(ctx, host) {
@@ -371,8 +370,8 @@ func (m *Monitor) probe(ctx context.Context, w *watch, at time.Time) []string {
 	w.up, w.returned, w.backAt = true, true, at
 	down := at.Sub(w.downAt)
 	m.mu.Unlock()
-	return append(lines, fmt.Sprintf("[back] %s is back at %s, after %s down\n",
-		host.Name, stamp(at), formatUptime(down)))
+	return append(lines,
+		hostLine(host.Name, "[back] is back at %s, after %s down", stamp(at), formatUptime(down)))
 }
 
 // sshAlive reports whether the host will accept an SSH session and run a
@@ -403,8 +402,8 @@ func (m *Monitor) warnNeverDropped(at time.Time) []string {
 			continue
 		}
 		w.warned = true
-		lines = append(lines, fmt.Sprintf(
-			"[warn] %s answered every probe; it never left the network\n", name))
+		lines = append(lines,
+			hostLine(name, "[warn] answered every probe; it never left the network"))
 	}
 	return lines
 }

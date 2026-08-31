@@ -201,6 +201,23 @@ before it executes. Because the tool mutates infrastructure state through
 fire-and-forget subprocesses, an operator watching the run can see exactly what
 was attempted against which host and reproduce any step by hand.
 
+Every line about a particular host leads with that host's name —
+`vm-a: [down] stopped answering at 09:14:07`, `vm-a: $ ssh … 10.0.0.21 …` — so
+the transcript is read down a single column of names. This is what makes the
+echoed commands usable: a command carries an address, because an address is what
+`ssh` and `ping` take, and nothing else on the line says whose address it is.
+Lines about the run rather than a host — tier headers, the watch list, the
+closing summary — carry no prefix, which is what makes the prefix mean
+something.
+
+Indentation still carries the hierarchy, one level for a line belonging to the
+action announced above it: the commands echoed under
+`Issuing reboot command to`, the verdicts under `Verifying boot state changed`.
+The monitor's observations are the exception and sit at the left margin, because
+they arrive on the sampler's own schedule rather than under any announced step —
+which is also where a reader scanning a long run for what actually happened
+wants them, set apart from what was merely attempted.
+
 ### 8. Pending-Reboot Detection (`--if-needed`)
 
 Rather than depend on a configuration management runner to decide which hosts to

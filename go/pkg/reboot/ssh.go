@@ -44,9 +44,9 @@ func RebootHosts(out io.Writer, runner Runner, hosts []Host) {
 		// Falling back to an unprivileged reboot covers hosts where the login
 		// user is already root and sudo is not installed at all.
 		args := sshCommand(host, "sudo reboot || reboot")
-		report(out, "  $ %s\n", FormatCommand("ssh", args...))
+		reportHost(out, host.Name, "$ %s", FormatCommand("ssh", args...))
 		if err := runner.Start("ssh", args...); err != nil {
-			report(out, "  WARNING: failed to issue reboot to %s: %v\n", host.Name, err)
+			reportHost(out, host.Name, "WARNING: failed to issue the reboot: %v", err)
 		}
 	}
 }

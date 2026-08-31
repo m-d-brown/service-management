@@ -146,7 +146,7 @@ func TestPrintProbeReport(t *testing.T) {
 		t.Errorf("output = %q, want a count of checked and pending hosts", out.String())
 	}
 	// Every host gets a line, so a verdict is never inferred from silence.
-	for _, want := range []string{"web1 — packages", "web2 — no pending", "web3 — probe failed"} {
+	for _, want := range []string{"web1: packages", "web2: no pending", "web3: probe failed"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output = %q, want it to contain %q", out.String(), want)
 		}

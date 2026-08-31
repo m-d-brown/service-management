@@ -36,6 +36,40 @@ func TestFormatCommand(t *testing.T) {
 	}
 }
 
+func TestHostLineLeadsWithTheHost(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "an echoed command is named by its host",
+			got:  hostLine("web1", "$ %s", "ping -c 1 10.0.0.4"),
+			want: "web1: $ ping -c 1 10.0.0.4\n",
+		},
+		{
+			// The tag stays with the message it grades; the host still leads.
+			name: "a tagged observation keeps its tag after the host",
+			got:  hostLine("vm-a", "[down] stopped answering at %s", "09:14:07"),
+			want: "vm-a: [down] stopped answering at 09:14:07\n",
+		},
+		{
+			// The message is formatted before it is embedded, so a percent sign
+			// that survives into the text is not read as a verb a second time.
+			name: "a formatted message is not re-scanned for verbs",
+			got:  hostLine("web1", "%s", "boot_id=%s unread"),
+			want: "web1: boot_id=%s unread\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("hostLine() = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatCommandIsCopyPasteable(t *testing.T) {
 	// The echoed line is only worth printing if an operator can paste it back
 	// into a shell and get the same argument vector, so check that against a

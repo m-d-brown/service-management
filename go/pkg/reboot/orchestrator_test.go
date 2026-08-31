@@ -334,7 +334,7 @@ func TestRunIfNeededRechecksLaterTiers(t *testing.T) {
 	if got := rebootedDestinations(runner); len(got) != 1 || got[0] != "10.0.0.5" {
 		t.Errorf("rebooted %v, want only the hypervisor", got)
 	}
-	if !strings.Contains(out.String(), "Skipping vm-a: no longer needs a reboot.") {
+	if !strings.Contains(out.String(), "vm-a: skipping — no longer needs a reboot") {
 		t.Errorf("output = %q, want the skip announced", out.String())
 	}
 	if !strings.Contains(out.String(), "Tier 2 is already up to date") {
@@ -491,6 +491,43 @@ func TestRunWatchesBeforeAnythingGoesDown(t *testing.T) {
 	}
 }
 
+func TestRunLeadsEveryLineCarryingAnAddressWithItsHost(t *testing.T) {
+	// Commands carry an address, because an address is what ssh and ping take.
+	// Unless the host leads the line, a transcript is a column of IP addresses
+	// the reader has to map back to the fleet by hand.
+	f := newFleet("10.0.0.5", "10.0.0.21")
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: f.runner(), Clock: newFakeClock(), Out: &out}
+	plan := newPlan(t, []string{
+		"hv1,addr=10.0.0.5",
+		"vm-a,addr=10.0.0.21,after=hv1",
+	})
+	if _, err := orch.Run(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+
+	names := map[string]string{"10.0.0.5": "hv1", "10.0.0.21": "vm-a"}
+	addressed := 0
+	for _, line := range strings.Split(out.String(), "\n") {
+		for addr, name := range names {
+			if !strings.Contains(line, addr) {
+				continue
+			}
+			addressed++
+			// Indentation may still set the line under the step it belongs to,
+			// but nothing except whitespace may come before the name.
+			if !strings.HasPrefix(strings.TrimLeft(line, " "), name+": ") {
+				t.Errorf("line %q carries %s without leading with %q", line, addr, name)
+			}
+		}
+	}
+	// Guard the guard: a run that echoed no addresses would pass vacuously.
+	if addressed == 0 {
+		t.Error("no line carried an address; the check proved nothing")
+	}
+}
+
 func TestRunConfirmsAMarkerlessHostFromTheObservedCycle(t *testing.T) {
 	// A switch or appliance exposing neither boot_id nor uptime used to be
 	// unverifiable in either direction. Watching it go down and come back is
@@ -515,7 +552,7 @@ func TestRunConfirmsAMarkerlessHostFromTheObservedCycle(t *testing.T) {
 	if !strings.Contains(got.Detail, "seen to go down") {
 		t.Errorf("Detail = %q, want it to cite the observed cycle", got.Detail)
 	}
-	if !strings.Contains(out.String(), "[back] switch1 is back") {
+	if !strings.Contains(out.String(), "switch1: [back] is back") {
 		t.Errorf("output = %q, want the return logged", out.String())
 	}
 }
@@ -537,7 +574,7 @@ func TestRunReportsAHostThatNeverLeftTheNetwork(t *testing.T) {
 	if got := result.NotRebooted(); len(got) != 1 {
 		t.Fatalf("NotRebooted() = %v, want the host reported as never rebooted", got)
 	}
-	if !strings.Contains(out.String(), "[warn] switch1 answered every probe") {
+	if !strings.Contains(out.String(), "switch1: [warn] answered every probe") {
 		t.Errorf("output = %q, want the never-dropped warning", out.String())
 	}
 }

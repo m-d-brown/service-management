@@ -224,27 +224,25 @@ The following hosts will be rebooted (parents first, nested dependents last):
 
 === Executing Tier: 1 ===
 Recording pre-reboot boot state...
-  Reading boot state of hypervisor-1:
-    $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
+  hypervisor-1: $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
 Watching hypervisor-1, vm-a for the reboot (sampling every 1s)...
-  $ ping -c 1 -W 1 10.0.0.5
-  $ ping -c 1 -W 1 10.0.0.21
+  hypervisor-1: $ ping -c 1 -W 1 10.0.0.5
+  vm-a: $ ping -c 1 -W 1 10.0.0.21
 Issuing reboot command to: hypervisor-1
-  $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'sudo reboot || reboot'
-[down] hypervisor-1 stopped answering at 09:14:07
-[down] vm-a stopped answering at 09:14:07
-[ping] hypervisor-1 answers ping again at 09:14:49; waiting for SSH
-[back] hypervisor-1 is back at 09:15:02, after 55s down
-[ping] vm-a answers ping again at 09:15:21; waiting for SSH
-[back] vm-a is back at 09:15:29, after 1m 22s down
+  hypervisor-1: $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'sudo reboot || reboot'
+hypervisor-1: [down] stopped answering at 09:14:07
+vm-a: [down] stopped answering at 09:14:07
+hypervisor-1: [ping] answers ping again at 09:14:49; waiting for SSH
+hypervisor-1: [back] is back at 09:15:02, after 55s down
+vm-a: [ping] answers ping again at 09:15:21; waiting for SSH
+vm-a: [back] is back at 09:15:29, after 1m 22s down
 Verifying boot state changed...
-  Reading boot state of hypervisor-1:
-    $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
-[✓] hypervisor-1 rebooted: boot_id changed (9c2f1a44-3b7e-4d51-9f0a-1b2c3d4e5f60 -> 1d7b9e02-5a3c-4f18-8e6d-7a9b0c1d2e3f)
+  hypervisor-1: $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
+  hypervisor-1: [✓] rebooted: boot_id changed (9c2f1a44-3b7e-4d51-9f0a-1b2c3d4e5f60 -> 1d7b9e02-5a3c-4f18-8e6d-7a9b0c1d2e3f)
 
 === Executing Tier: 2 ===
 ... (vm-a follows the same probe, reboot, ping, verify sequence) ...
-[✓] vm-a rebooted: boot_id changed (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192 -> b83a5c17-6d4e-4029-9c3b-5f1a2e8d47c0)
+  vm-a: [✓] rebooted: boot_id changed (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192 -> b83a5c17-6d4e-4029-9c3b-5f1a2e8d47c0)
 
 === Reboot Verification Summary ===
 Confirmed rebooted: 2  Not rebooted: 0  Unverified: 0
@@ -256,13 +254,13 @@ A host that answers ping without having actually restarted is called out and
 fails the run rather than being reported as a success:
 
 ```text
-[warn] vm-a answered every probe; it never left the network
+vm-a: [warn] answered every probe; it never left the network
 Verifying boot state changed...
-[✗] WARNING: vm-a did NOT reboot: boot_id is unchanged (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192); the host never went down
+  vm-a: [✗] WARNING: did NOT reboot: boot_id is unchanged (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192); the host never went down
 
 === Reboot Verification Summary ===
 Confirmed rebooted: 1  Not rebooted: 1  Unverified: 0
-  [✗] vm-a: boot_id is unchanged (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192); the host never went down
+  vm-a: [✗] boot_id is unchanged (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192); the host never went down
 
 All tiers complete, but 1 host(s) could not be confirmed as rebooted.
 ```

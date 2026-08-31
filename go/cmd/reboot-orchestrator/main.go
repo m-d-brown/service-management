@@ -313,6 +313,6 @@ func reportUnprobed(statuses []reboot.RebootStatus) {
 	}
 	_, _ = fmt.Fprintln(os.Stderr, "\nWARNING: these hosts could not be checked:")
 	for _, status := range statuses {
-		_, _ = fmt.Fprintf(os.Stderr, "  %s — %s\n", status.Host, status.Reason)
+		_, _ = fmt.Fprintf(os.Stderr, "  %s: %s\n", status.Host, status.Reason)
 	}
 }

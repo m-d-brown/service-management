@@ -121,23 +121,24 @@ func CaptureBootState(
 	host Host,
 	timeout time.Duration,
 ) *BootState {
+	// The echoed command is the whole announcement: it names the host, and the
+	// printf it carries says plainly what is being read.
 	args := sshCommand(host, bootProbeCommand)
-	report(out, "  Reading boot state of %s:\n", host.Name)
-	report(out, "    $ %s\n", FormatCommand("ssh", args...))
+	reportHost(out, host.Name, "$ %s", FormatCommand("ssh", args...))
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	stdout, err := runner.Run(ctx, "", "ssh", args...)
 	if err != nil {
-		report(out, "  WARNING: boot state probe for %q failed: %v\n", host.Name, err)
+		reportHost(out, host.Name, "WARNING: boot state probe failed: %v", err)
 		return nil
 	}
 
 	state := parseBootProbe(stdout, clock.Now())
 	if state.isEmpty() {
-		report(out, "  WARNING: %q exposed neither /proc/sys/kernel/random/boot_id "+
-			"nor /proc/uptime; its reboot cannot be verified.\n", host.Name)
+		reportHost(out, host.Name, "WARNING: exposed neither /proc/sys/kernel/random/boot_id "+
+			"nor /proc/uptime; its reboot cannot be verified.")
 	}
 	return &state
 }

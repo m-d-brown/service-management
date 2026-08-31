@@ -106,8 +106,8 @@ func TestMonitorObservesTheWholePowerCycle(t *testing.T) {
 		t.Errorf("DownFor() = %v, want 3s", got)
 	}
 	for _, want := range []string{
-		"[down] vm-a stopped answering",
-		"[back] vm-a is back",
+		"vm-a: [down] stopped answering",
+		"vm-a: [back] is back",
 		"after 3s down",
 	} {
 		if !strings.Contains(out, want) {
@@ -131,10 +131,10 @@ func TestMonitorWaitsForSSHNotPing(t *testing.T) {
 	if got := cycle.DownFor(); got != 3*time.Second {
 		t.Errorf("DownFor() = %v, want the host back only once SSH answered", got)
 	}
-	if !strings.Contains(out, "[ping] vm-a answers ping again") {
+	if !strings.Contains(out, "vm-a: [ping] answers ping again") {
 		t.Errorf("output = %q, want the ping-but-not-SSH stage reported", out)
 	}
-	if strings.Count(out, "[ping] vm-a") != 1 {
+	if strings.Count(out, "vm-a: [ping]") != 1 {
 		t.Errorf("output = %q, want the ping stage reported once, not every sample", out)
 	}
 }
@@ -148,10 +148,10 @@ func TestMonitorReportsAHostThatNeverDrops(t *testing.T) {
 	if !cycle.StayedUp() {
 		t.Errorf("StayedUp() = false, want a host that answered the whole drop wait")
 	}
-	if !strings.Contains(out, "[warn] web1 answered every probe") {
+	if !strings.Contains(out, "web1: [warn] answered every probe") {
 		t.Errorf("output = %q, want the never-dropped warning", out)
 	}
-	if got := strings.Count(out, "[warn] web1"); got != 1 {
+	if got := strings.Count(out, "web1: [warn]"); got != 1 {
 		t.Errorf("warning count = %d, want it said once rather than every sample", got)
 	}
 }

@@ -311,8 +311,8 @@ func TestCaptureBootStateUnreachable(t *testing.T) {
 	if state != nil {
 		t.Errorf("CaptureBootState() = %+v, want nil for an unreachable host", state)
 	}
-	if !strings.Contains(out.String(), "probe for \"web1\" failed") {
-		t.Errorf("output = %q, want a warning naming the host", out.String())
+	if !strings.Contains(out.String(), "web1: WARNING: boot state probe failed") {
+		t.Errorf("output = %q, want a warning led by the host it is about", out.String())
 	}
 }
 

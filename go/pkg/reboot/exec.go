@@ -119,6 +119,33 @@ func report(out io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(out, format, args...)
 }
 
+// hostIndent sets a line one level in, under the action that announced it.
+const hostIndent = "  "
+
+// hostLine renders a progress line about one host, led by that host's name.
+//
+// Every line a run says about a particular host begins with the host, so the
+// transcript is read down a single column of names instead of hunting for the
+// subject somewhere inside each line. It matters most on the lines that echo a
+// command: those carry an address, because an address is what ssh and ping take,
+// and nothing else on the line says which host that address belongs to.
+//
+// This is the unindented form, for the monitor's observations. Those arrive on
+// the sampler's own schedule rather than under any action the run announced, so
+// they sit at the left margin, where a reader scanning a long run for what
+// actually happened finds them among the steps that were merely attempted.
+func hostLine(host, format string, args ...any) string {
+	return fmt.Sprintf("%s: %s\n", host, fmt.Sprintf(format, args...))
+}
+
+// reportHost writes a progress line about one host, indented under the action
+// announced above it: a command echoed under "Issuing reboot command to", a
+// verdict under "Verifying boot state changed". The indentation says the line
+// belongs to that step; the name says which host it is about. See hostLine.
+func reportHost(out io.Writer, host, format string, args ...any) {
+	report(out, "%s%s", hostIndent, hostLine(host, format, args...))
+}
+
 // FormatCommand renders an argument vector as a copy-pasteable shell line.
 //
 // Every command the orchestrator runs is echoed before it runs. Because the
