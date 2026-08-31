@@ -491,6 +491,36 @@ func TestRunWatchesBeforeAnythingGoesDown(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotWarnAboutDependentsItNeverRebooted(t *testing.T) {
+	// vm-a reboots after hv1, so it is watched while hv1 goes down — but this
+	// run targets hv1 alone, and hv1's reboot leaves vm-a running. Nothing was
+	// asked of vm-a, so there is nothing to warn about.
+	f := newFleet("10.0.0.5", "10.0.0.21")
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: f.runner(), Clock: newFakeClock(), Out: &out}
+	plan := newPlan(t, []string{
+		"hv1,addr=10.0.0.5",
+		"vm-a,addr=10.0.0.21,after=hv1",
+	}, "hv1")
+
+	result, err := orch.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.NotRebooted()) != 0 {
+		t.Errorf("NotRebooted() = %v, want none", result.NotRebooted())
+	}
+	// It is watched — the run waits for it — but not judged by whether it moved.
+	if !strings.Contains(out.String(), "Watching hv1, vm-a") {
+		t.Errorf("output = %q, want the dependent watched alongside its parent", out.String())
+	}
+	if strings.Contains(out.String(), "[warn]") {
+		t.Errorf("output = %q, want no warning about a dependent nobody rebooted", out.String())
+	}
+}
+
 func TestRunLeadsEveryLineCarryingAnAddressWithItsHost(t *testing.T) {
 	// Commands carry an address, because an address is what ssh and ping take.
 	// Unless the host leads the line, a transcript is a column of IP addresses

@@ -83,7 +83,7 @@ func runMonitor(t *testing.T, host string, script []reachability, dropWait time.
 	runner := scriptedRunner(map[string][]reachability{host: script})
 
 	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
-		[]Host{{Name: host}}, time.Second, time.Second, time.Second, dropWait)
+		Watchlist{Targets: []Host{{Name: host}}}, time.Second, time.Second, time.Second, dropWait)
 	monitor.StartDropWait()
 	if err := monitor.WaitForReturn(context.Background()); err != nil {
 		t.Fatalf("WaitForReturn() = %v, want nil", err)
@@ -156,13 +156,64 @@ func TestMonitorReportsAHostThatNeverDrops(t *testing.T) {
 	}
 }
 
+func TestMonitorSaysNothingOfADependentThatStaysUp(t *testing.T) {
+	// A dependent is watched in case its parent takes it down, not because
+	// anything was asked of it, and a parent's reboot routinely leaves one
+	// untouched. Warning there flagged the ordinary case once per dependent and
+	// buried the target the line exists for.
+	var out bytes.Buffer
+	runner := scriptedRunner(map[string][]reachability{
+		"hv1":  {up, down, down, up},
+		"vm-a": {up},
+	})
+	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
+		Watchlist{Targets: []Host{{Name: "hv1"}}, Dependents: []Host{{Name: "vm-a"}}},
+		time.Second, time.Second, time.Second, 3*time.Second)
+	monitor.StartDropWait()
+	if err := monitor.WaitForReturn(context.Background()); err != nil {
+		t.Fatalf("WaitForReturn() = %v, want nil", err)
+	}
+	monitor.Stop()
+
+	if strings.Contains(out.String(), "[warn]") {
+		t.Errorf("output = %q, want no warning about a host never told to reboot", out.String())
+	}
+	// It is still watched, and still waited for: the run must not hand a tier
+	// on before its dependents are usable again.
+	if cycle := monitor.Cycles()["vm-a"]; !cycle.Watched {
+		t.Errorf("vm-a = %+v, want it watched even though it is not warned about", cycle)
+	}
+}
+
+func TestMonitorStillWarnsAboutATargetAlongsideAQuietDependent(t *testing.T) {
+	// The silence above must be about being a dependent, not about the tier
+	// happening to have a dependent in it.
+	var out bytes.Buffer
+	runner := scriptedRunner(map[string][]reachability{"hv1": {up}, "vm-a": {up}})
+	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
+		Watchlist{Targets: []Host{{Name: "hv1"}}, Dependents: []Host{{Name: "vm-a"}}},
+		time.Second, time.Second, time.Second, 3*time.Second)
+	monitor.StartDropWait()
+	if err := monitor.WaitForReturn(context.Background()); err != nil {
+		t.Fatalf("WaitForReturn() = %v, want nil", err)
+	}
+	monitor.Stop()
+
+	if !strings.Contains(out.String(), "hv1: [warn] answered every probe") {
+		t.Errorf("output = %q, want the target that ignored its reboot warned about", out.String())
+	}
+	if strings.Contains(out.String(), "vm-a: [warn]") {
+		t.Errorf("output = %q, want the dependent left out of it", out.String())
+	}
+}
+
 func TestMonitorTakesItsFirstSampleBeforeReturning(t *testing.T) {
 	// The first sample has to be in before the caller powers anything down,
 	// or the drop it is meant to catch happens unobserved.
 	var out bytes.Buffer
 	runner := scriptedRunner(nil)
 	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
-		[]Host{{Name: "vm-a"}}, time.Second, time.Second, time.Second, time.Minute)
+		Watchlist{Targets: []Host{{Name: "vm-a"}}}, time.Second, time.Second, time.Second, time.Minute)
 	defer monitor.Stop()
 
 	if got := runner.countMatching("ping"); got == 0 {
@@ -174,7 +225,7 @@ func TestMonitorStopsSamplingWhenStopped(t *testing.T) {
 	var out bytes.Buffer
 	runner := scriptedRunner(nil)
 	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
-		[]Host{{Name: "web1"}}, time.Second, time.Second, time.Second, time.Second)
+		Watchlist{Targets: []Host{{Name: "web1"}}}, time.Second, time.Second, time.Second, time.Second)
 	monitor.StartDropWait()
 	if err := monitor.WaitForReturn(context.Background()); err != nil {
 		t.Fatalf("WaitForReturn() = %v, want nil", err)
@@ -196,7 +247,7 @@ func TestMonitorHonoursCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	monitor := StartMonitor(ctx, &out, runner, newFakeClock(),
-		[]Host{{Name: "vm-a"}}, time.Second, time.Second, time.Second, time.Minute)
+		Watchlist{Targets: []Host{{Name: "vm-a"}}}, time.Second, time.Second, time.Second, time.Minute)
 	cancel()
 
 	if err := monitor.WaitForReturn(ctx); err == nil {
@@ -212,7 +263,8 @@ func TestMonitorReportsEachHostSeparately(t *testing.T) {
 		"vm-b": {up},
 	})
 	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
-		[]Host{{Name: "vm-a"}, {Name: "vm-b"}}, time.Second, time.Second, time.Second, 3*time.Second)
+		Watchlist{Targets: []Host{{Name: "vm-a"}, {Name: "vm-b"}}},
+		time.Second, time.Second, time.Second, 3*time.Second)
 	monitor.StartDropWait()
 	if err := monitor.WaitForReturn(context.Background()); err != nil {
 		t.Fatalf("WaitForReturn() = %v, want nil", err)
@@ -231,7 +283,7 @@ func TestMonitorReportsEachHostSeparately(t *testing.T) {
 func TestMonitorWithNoHostsSettlesImmediately(t *testing.T) {
 	var out bytes.Buffer
 	monitor := StartMonitor(context.Background(), &out, scriptedRunner(nil), newFakeClock(),
-		nil, time.Second, time.Second, time.Second, time.Minute)
+		Watchlist{}, time.Second, time.Second, time.Second, time.Minute)
 	monitor.StartDropWait()
 	if err := monitor.WaitForReturn(context.Background()); err != nil {
 		t.Fatalf("WaitForReturn() = %v, want nil", err)
@@ -271,7 +323,7 @@ func TestMonitorJudgesNoHostBeforeTheDropWaitStarts(t *testing.T) {
 	var out bytes.Buffer
 	runner := scriptedRunner(map[string][]reachability{"web1": {up}})
 	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
-		[]Host{{Name: "web1"}}, time.Second, time.Second, time.Second, time.Second)
+		Watchlist{Targets: []Host{{Name: "web1"}}}, time.Second, time.Second, time.Second, time.Second)
 	defer monitor.Stop()
 
 	if cycle := monitor.Cycles()["web1"]; cycle.DropWaitElapsed {

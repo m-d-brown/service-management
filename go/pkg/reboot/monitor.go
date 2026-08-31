@@ -27,6 +27,22 @@ import (
 // large tier does not open a connection per host on every sample.
 const monitorConcurrency = 8
 
+// Watchlist is what one tier asks the monitor to watch.
+//
+// Both halves are sampled identically; they differ in what a host answering
+// throughout is worth. A target was told to reboot, so never leaving the
+// network is evidence it did not. A dependent was told nothing, and is watched
+// only in case the target's reboot takes it down — which its After edge does
+// not actually promise, that edge being an ordering and not a statement about
+// what runs where. So a dependent that stays up says nothing at all.
+type Watchlist struct {
+	// Targets are the hosts this tier issues a reboot command to.
+	Targets []Host
+	// Dependents are hosts watched only because a target's reboot may take
+	// them down.
+	Dependents []Host
+}
+
 // Cycle is what the monitor saw of one host's power cycle.
 //
 // Watched and DropWaitElapsed exist so the zero value cannot be mistaken for
@@ -73,6 +89,9 @@ func (c Cycle) DownFor() time.Duration {
 type watch struct {
 	// host is what to probe.
 	host Host
+	// targeted records that this host was issued a reboot command, which is
+	// what makes it never dropping worth remarking on.
+	targeted bool
 	// up records whether the last sample was answered.
 	up bool
 	// dropped records that the host has been seen to stop answering.
@@ -143,7 +162,7 @@ func StartMonitor(
 	out io.Writer,
 	runner Runner,
 	clock Clock,
-	hosts []Host,
+	list Watchlist,
 	interval, pingTimeout, sshTimeout, dropWait time.Duration,
 ) *Monitor {
 	m := &Monitor{
@@ -154,21 +173,18 @@ func StartMonitor(
 		pingTimeout: pingTimeout,
 		sshTimeout:  sshTimeout,
 		dropWait:    dropWait,
-		seen:        make(map[string]*watch, len(hosts)),
+		seen:        make(map[string]*watch, len(list.Targets)+len(list.Dependents)),
 		stop:        make(chan struct{}),
 		exited:      make(chan struct{}),
 		settled:     make(chan struct{}),
 	}
-	for _, host := range hosts {
-		if _, ok := m.seen[host.Name]; ok {
-			continue
-		}
-		m.seen[host.Name] = &watch{host: host, up: true}
-		m.order = append(m.order, host.Name)
-	}
+	// Targets are added first so a host named in both halves is watched as the
+	// target it is, rather than as the dependent it also happens to be.
+	m.add(list.Targets, true)
+	m.add(list.Dependents, false)
 	slices.Sort(m.order)
 
-	if len(hosts) > 0 {
+	if len(m.order) > 0 {
 		report(out, "Watching %s for the reboot (sampling every %s)...\n",
 			joinNames(m.hosts()), interval)
 		for _, host := range m.hosts() {
@@ -179,6 +195,18 @@ func StartMonitor(
 	m.sweep(ctx, clock.Now())
 	go m.loop(ctx)
 	return m
+}
+
+// add begins watching hosts, skipping any already watched. It runs before the
+// sampler starts, so it takes no lock.
+func (m *Monitor) add(hosts []Host, targeted bool) {
+	for _, host := range hosts {
+		if _, ok := m.seen[host.Name]; ok {
+			continue
+		}
+		m.seen[host.Name] = &watch{host: host, targeted: targeted, up: true}
+		m.order = append(m.order, host.Name)
+	}
 }
 
 // loop samples until stopped or the context is cancelled.
@@ -384,21 +412,25 @@ func (m *Monitor) sshAlive(ctx context.Context, host Host) bool {
 	return err == nil
 }
 
-// warnNeverDropped reports each host that answered continuously past the drop
-// wait, once per host.
+// warnNeverDropped reports each targeted host that answered continuously past
+// the drop wait, once per host.
 //
-// It states only what was seen, not what it means. A watched host is not
-// necessarily one being rebooted — dependents are watched because they go down
-// with their parent — so concluding "did not reboot" here would be wrong for
-// half of them. VerifyReboot knows which hosts were targeted and draws that
-// conclusion; this line is the evidence it draws it from.
+// Only targets are worth a word. A dependent is watched in case a target's
+// reboot takes it down, not because anything was asked of it — and its After
+// edge only orders the two, so nothing said it would go down in the first
+// place. Warning there flagged the ordinary case, and buried the one host the
+// line exists for: a machine that was sent a reboot and never went anywhere.
+//
+// The line still states only what was seen, not what it means. VerifyReboot
+// weighs it against the host's own boot markers and draws the conclusion; this
+// is the evidence it draws it from.
 func (m *Monitor) warnNeverDropped(at time.Time) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var lines []string
 	for _, name := range m.order {
 		w := m.seen[name]
-		if w.dropped || w.warned || !m.dropWaitElapsed(at) {
+		if !w.targeted || w.dropped || w.warned || !m.dropWaitElapsed(at) {
 			continue
 		}
 		w.warned = true

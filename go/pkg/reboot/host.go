@@ -61,7 +61,13 @@ func (hs Hosts) Names() []string {
 }
 
 // Dependents returns the hosts that declare the named host in their After list.
-// These come back online with their parent, so a tier waits for them too.
+//
+// The edge declares an ordering and nothing more: do not reboot me until that
+// host is back. Whether the named host's reboot actually takes these down is
+// never declared and often untrue — "runs on that box" and "needs that gateway
+// back first" are written identically. A tier therefore waits for its
+// dependents, because any of them may go down, but concludes nothing from one
+// that does not.
 func (hs Hosts) Dependents(name string) []string {
 	var out []string
 	for _, other := range hs.Names() {

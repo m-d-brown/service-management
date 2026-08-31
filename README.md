@@ -250,8 +250,11 @@ Confirmed rebooted: 2  Not rebooted: 0  Unverified: 0
 All tiers complete. Reboot orchestration finished successfully.
 ```
 
-A host that answers ping without having actually restarted is called out and
-fails the run rather than being reported as a success:
+A host that was sent a reboot and answered ping throughout without actually
+restarting is called out and fails the run rather than being reported as a
+success. Dependents are not: they are watched in case a target's reboot takes
+them down, not because anything was asked of them, and an `after` edge orders
+the two reboots without promising that one causes the other.
 
 ```text
 vm-a: [warn] answered every probe; it never left the network

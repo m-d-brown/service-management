@@ -144,8 +144,13 @@ and back inside a single fixed wait.
   network stack is up — often well before sshd accepts a connection — and a host
   handed to the next tier on ping alone may not yet be usable.
 - **Scope.** Every host in the tier is watched, along with every host that sits
-  behind one of them: a dependent goes down with its parent whether or not it
-  was targeted itself.
+  behind one of them: a dependent may go down with its parent whether or not it
+  was targeted itself. Note that `after` declares only an ordering — do not
+  reboot me until that host is back — and never says the parent's reboot takes
+  the dependent down; "runs on that box" and "needs that gateway back first" are
+  written identically. So the two are watched the same way but kept apart,
+  because only a host that was sent a reboot can be judged by whether it went
+  down.
 - **Sample timing.** A sweep is stamped with the instant it began rather than
   each probe reading the clock as it finishes, so a tier that went down together
   is recorded as having gone down together.
@@ -162,10 +167,13 @@ and back inside a single fixed wait.
   still issuing the very commands it is timing, reporting hosts as never having
   left a network they had not yet been asked to leave — and letting a tier count
   as settled before a single host had gone anywhere.
-- **Hosts that never drop.** A host still answering after the drop wait is
-  reported once and the run proceeds. The monitor states only what it saw;
-  whether that means a failed reboot is decided by verification, which knows
-  which hosts were actually targeted.
+- **Hosts that never drop.** A _targeted_ host still answering after the drop
+  wait is reported once and the run proceeds. The monitor states only what it
+  saw; whether that means a failed reboot is decided by verification, weighing
+  it against the host's own boot markers. Dependents are left out of this:
+  nothing was asked of them, and their `after` edge never promised they would go
+  down, so remarking on one that did not flagged the ordinary case and buried
+  the line's one real subject.
 
 ### 6. Boot State Verification
 

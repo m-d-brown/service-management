@@ -194,7 +194,7 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 		// Start watching before anything powers a host down: a fast host can be
 		// gone and back before a first look would have happened, and a drop is
 		// only evidence if something was already looking when it happened.
-		monitor := StartMonitor(ctx, o.writer(), o.Runner, o.Clock, o.waitList(plan, tierNames),
+		monitor := StartMonitor(ctx, o.writer(), o.Runner, o.Clock, o.watchlist(plan, tierNames),
 			o.Config.sampleInterval(), o.Config.PingTimeout, o.Config.ProbeTimeout, o.Config.DropWait)
 
 		RebootHosts(o.writer(), o.Runner, tierHosts)
@@ -222,18 +222,28 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 	return result, nil
 }
 
-// waitList returns the tier plus every host that sits behind one of its
-// members. A dependent goes down with its parent whether or not it was targeted
-// itself, so the run cannot move on until it has come back.
-func (o *Orchestrator) waitList(plan Plan, tierNames []string) []Host {
-	wanted := map[string]bool{}
+// watchlist returns what the monitor should watch for a tier: the tier itself,
+// plus every host that sits behind one of its members. A dependent may go down
+// with its parent whether or not it was targeted, so the run cannot move on
+// until it has come back — but it is kept apart from the tier, because only a
+// host that was sent a reboot can be judged by whether it went down.
+func (o *Orchestrator) watchlist(plan Plan, tierNames []string) Watchlist {
+	targeted := map[string]bool{}
 	for _, name := range tierNames {
-		wanted[name] = true
+		targeted[name] = true
+	}
+	dependents := map[string]bool{}
+	for _, name := range tierNames {
 		for _, dependent := range plan.Hosts.Dependents(name) {
-			wanted[dependent] = true
+			if !targeted[dependent] {
+				dependents[dependent] = true
+			}
 		}
 	}
-	return plan.hostsFor(slices.Sorted(maps.Keys(wanted)))
+	return Watchlist{
+		Targets:    plan.hostsFor(slices.Sorted(maps.Keys(targeted))),
+		Dependents: plan.hostsFor(slices.Sorted(maps.Keys(dependents))),
+	}
 }
 
 // captureBaselines records the pre-reboot boot identity of each host in a tier.
