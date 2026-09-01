@@ -2,6 +2,7 @@ package reboot
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"maps"
 	"slices"
@@ -72,8 +73,11 @@ func (o *Orchestrator) writer() io.Writer {
 
 // Result is what a run produced.
 type Result struct {
-	// Verifications holds one verdict per host actually rebooted. Hosts a
-	// re-check dropped are absent, never having been rebooted.
+	// Verifications holds one verdict per host actually rebooted, including
+	// hosts rebooted by the tier hosting them rather than by a command of
+	// their own — a credited reboot is still a reboot, and belongs in the
+	// summary. Hosts a re-check dropped are absent, never having been
+	// rebooted at all.
 	Verifications []RebootVerification
 	// Unprobed holds hosts that could not be checked for a pending reboot.
 	// They are excluded from the reboot set — an unprobed host is not known to
@@ -143,10 +147,19 @@ func (o *Orchestrator) partitionPending(statuses []RebootStatus, announceSkips b
 // Run executes the tiered reboot.
 //
 // Tiers run in dependency order; each is rebooted in parallel, waited on until
-// it and its dependents answer ping, and then verified to have actually
-// restarted. A tier that fails verification does not stop the run: stopping
-// half way would leave the fleet in a state no one asked for, so every tier is
-// attempted and the summary is the record of what to retry.
+// it, its guests, and its dependents are back, and then verified to have
+// actually restarted. A tier that fails verification does not stop the run:
+// stopping half way would leave the fleet in a state no one asked for, so every
+// tier is attempted and the summary is the record of what to retry.
+//
+// A tier also delivers reboots it was never asked for, to every host declared
+// as running on one of its members. Those hosts are read before the tier goes
+// down and again after it returns, and any that provably restarted is credited
+// and dropped from the tier that meant to reboot it — the difference between
+// declaring hosting and merely ordering, and worth an entire second outage per
+// guest. Crediting requires proof, so it does not happen under
+// --skip-boot-verification: a reboot is skipped because it demonstrably already
+// happened, never because the topology said it should have.
 func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 	var result Result
 	if len(plan.Targets) == 0 {
@@ -159,12 +172,21 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 		return result, err
 	}
 
+	// Hosts already power-cycled by a tier that hosts them. Their own tier
+	// skips them rather than rebooting a machine that restarted minutes ago.
+	credited := map[string]bool{}
+
 	for position, tier := range tiers {
 		report(o.writer(), "\n=== Executing Tier: %d ===\n", position+1)
 
-		tierNames := tier
+		tierNames := o.dropCredited(plan, tier, credited)
+		if len(tierNames) == 0 {
+			report(o.writer(), "Tier %d was rebooted by the tier hosting it; nothing to do.\n", position+1)
+			continue
+		}
+
 		// Re-check every tier but the first. The tiers before this one have
-		// rebooted, taking their nested dependents down and back up with them,
+		// rebooted, taking the hosts they carry down and back up with them,
 		// which may already have applied what these hosts were queued for.
 		// This runs before the baseline capture so a host dropped here is never
 		// probed for a boot state it will not change, and never appears in the
@@ -173,7 +195,7 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 		// tier already waited for its hosts and their dependents to answer.
 		if o.Config.IfNeeded && position > 0 {
 			var unprobed []RebootStatus
-			statuses := ProbeHosts(ctx, o.Runner, plan.hostsFor(tier))
+			statuses := ProbeHosts(ctx, o.Runner, plan.hostsFor(tierNames))
 			tierNames, unprobed = o.partitionPending(statuses, true)
 			result.Unprobed = append(result.Unprobed, unprobed...)
 			if len(tierNames) == 0 {
@@ -184,11 +206,19 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 
 		tierHosts := plan.hostsFor(tierNames)
 
-		// Record the baseline before anything powers a host down, so the reboot
-		// cannot race the probe.
+		// The hosts this tier will take down with it that a later tier still
+		// means to reboot itself. Computed now because the evidence expires:
+		// once the parent has gone down, the boot identity that would prove the
+		// guest restarted has already been replaced by the one it came back on.
+		carried := o.carriedTargets(plan, tierNames, tiers[position+1:], credited)
+
+		// Record the baselines before anything powers a host down, so the
+		// reboot cannot race the probe.
 		var baselines map[string]*BootState
 		if o.Config.VerifyBootState {
-			baselines = o.captureBaselines(ctx, tierHosts)
+			baselines = map[string]*BootState{}
+			o.captureBaselines(ctx, baselines, tierHosts, false)
+			o.captureBaselines(ctx, baselines, carried, true)
 		}
 
 		// Start watching before anything powers a host down: a fast host can be
@@ -211,8 +241,12 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 		}
 
 		// Coming back is not the same as having restarted, so the boot identity
-		// still decides; the observed cycle only speaks where it cannot.
+		// still decides; the observed cycle only speaks where it cannot. The
+		// carried hosts are settled first, so a host credited here is already
+		// gone from the tier that would have rebooted it.
 		if o.Config.VerifyBootState {
+			result.Verifications = append(result.Verifications,
+				o.creditCarried(ctx, carried, baselines, cycles, credited)...)
 			result.Verifications = append(result.Verifications,
 				o.verifyTier(ctx, tierHosts, baselines, cycles)...)
 		}
@@ -222,43 +256,171 @@ func (o *Orchestrator) Run(ctx context.Context, plan Plan) (Result, error) {
 	return result, nil
 }
 
-// watchlist returns what the monitor should watch for a tier: the tier itself,
-// plus every host that sits behind one of its members. A dependent may go down
-// with its parent whether or not it was targeted, so the run cannot move on
-// until it has come back — but it is kept apart from the tier, because only a
-// host that was sent a reboot can be judged by whether it went down.
+// watchlist returns what the monitor should watch for a tier, in the three
+// groups whose behaviour means three different things.
+//
+// The tier's own hosts were sent a reboot. Everything hosted by one of them,
+// transitively, is going down with it whether or not it was targeted, so the
+// run cannot move on until those have come back. Everything merely ordered
+// after a member of the tier is watched too, because it might go down — its
+// edge never said it would, which is exactly why it is kept apart from the
+// hosts whose drop was promised.
+//
+// A host qualifying under more than one is placed in the strongest: a guest
+// that something else also orders itself after is still a guest.
 func (o *Orchestrator) watchlist(plan Plan, tierNames []string) Watchlist {
 	targeted := map[string]bool{}
 	for _, name := range tierNames {
 		targeted[name] = true
 	}
+
+	carried := map[string]bool{}
+	for _, name := range plan.Hosts.Carried(tierNames) {
+		if !targeted[name] {
+			carried[name] = true
+		}
+	}
+
 	dependents := map[string]bool{}
 	for _, name := range tierNames {
 		for _, dependent := range plan.Hosts.Dependents(name) {
-			if !targeted[dependent] {
+			if !targeted[dependent] && !carried[dependent] {
 				dependents[dependent] = true
 			}
 		}
 	}
+
 	return Watchlist{
 		Targets:    plan.hostsFor(slices.Sorted(maps.Keys(targeted))),
+		Carried:    plan.hostsFor(slices.Sorted(maps.Keys(carried))),
 		Dependents: plan.hostsFor(slices.Sorted(maps.Keys(dependents))),
 	}
 }
 
-// captureBaselines records the pre-reboot boot identity of each host in a tier.
-func (o *Orchestrator) captureBaselines(ctx context.Context, hosts []Host) map[string]*BootState {
-	report(o.writer(), "Recording pre-reboot boot state...\n")
-	baselines := make(map[string]*BootState, len(hosts))
+// dropCredited removes the hosts a previous tier's reboot already delivered.
+//
+// A guest whose hypervisor restarted two minutes ago has had precisely the
+// reboot this tier was going to give it, and the changed boot identity to prove
+// it. Doing it again applies nothing and costs the fleet a second outage. That
+// saving is the whole practical difference between hosting declared as hosting
+// and hosting written as a bare ordering, where the second reboot is
+// unavoidable because nothing ever claimed the first one happened.
+func (o *Orchestrator) dropCredited(plan Plan, names []string, credited map[string]bool) []string {
+	if len(credited) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if credited[name] {
+			reportHost(o.writer(), name, "skipping — already rebooted with %s", plan.Hosts[name].RunsOn)
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// carriedTargets returns the hosts this tier will take down that a later tier
+// still means to reboot in its own right.
+//
+// Those are the only ones whose free reboot is worth proving. A baseline costs
+// a connection per host, and a hypervisor's guests are where a fleet keeps its
+// largest counts, so the run spends that connection only where the answer can
+// save a whole reboot. Every other carried host is watched all the same — the
+// tier is not finished until it is back — but nothing is asked of it.
+func (o *Orchestrator) carriedTargets(
+	plan Plan, tierNames []string, remaining [][]string, credited map[string]bool,
+) []Host {
+	later := map[string]bool{}
+	for _, tier := range remaining {
+		for _, name := range tier {
+			if !credited[name] {
+				later[name] = true
+			}
+		}
+	}
+
+	var names []string
+	for _, name := range plan.Hosts.Carried(tierNames) {
+		if later[name] {
+			names = append(names, name)
+		}
+	}
+	return plan.hostsFor(names)
+}
+
+// creditCarried decides which of the hosts this tier took down actually
+// restarted, and credits those with a reboot they no longer need.
+//
+// The evidence is exactly what a host of the tier's own is judged by: the boot
+// identity read before the parent went down against the one read now, with the
+// observed power cycle breaking ties where the host exposes no marker. Nothing
+// is taken on the strength of the declaration itself — runs-on decided which
+// hosts were worth asking, and each host then answers for itself. A hypervisor
+// that quietly migrated a guest away cannot cause that guest's reboot to be
+// skipped.
+//
+// A host that cannot be shown to have restarted is left alone rather than
+// counted as a failure. Nothing was asked of it, so there is nothing it failed
+// to do: it keeps its place in a later tier and is rebooted there, which is
+// what would have happened had hosting never been declared at all.
+func (o *Orchestrator) creditCarried(ctx context.Context, hosts []Host,
+	baselines map[string]*BootState, cycles map[string]Cycle, credited map[string]bool,
+) []RebootVerification {
+	if len(hosts) == 0 {
+		return nil
+	}
+	report(o.writer(), "Checking the hosts this tier carried down...\n")
+
+	var results []RebootVerification
+	for _, host := range hosts {
+		after := CaptureBootState(ctx, o.writer(), o.Runner, o.Clock, host, o.Config.ProbeTimeout)
+		result := VerifyReboot(host.Name, baselines[host.Name], after, cycles[host.Name])
+		if result.Status != StatusConfirmed {
+			reportHost(o.writer(), host.Name,
+				"not credited, so it keeps its own tier: %s", result.Detail)
+			continue
+		}
+		credited[host.Name] = true
+		result.Detail = fmt.Sprintf("rebooted with %s: %s", host.RunsOn, result.Detail)
+		reportHost(o.writer(), host.Name, "[✓] %s", result.Detail)
+		results = append(results, result)
+	}
+	return results
+}
+
+// captureBaselines records the pre-reboot boot identity of each host into the
+// map the tier will later verify against.
+//
+// carried says which set these are: the tier's own hosts, about to be sent a
+// reboot, or the hosts underneath them, about to receive one whether anyone
+// asks or not. Both readings have to be taken before anything powers down, and
+// they differ only in what failing to take one costs.
+func (o *Orchestrator) captureBaselines(
+	ctx context.Context, into map[string]*BootState, hosts []Host, carried bool,
+) {
+	if len(hosts) == 0 {
+		return
+	}
+	if carried {
+		report(o.writer(), "Recording boot state of the hosts this tier will carry down...\n")
+	} else {
+		report(o.writer(), "Recording pre-reboot boot state...\n")
+	}
+
 	for _, host := range hosts {
 		state := CaptureBootState(ctx, o.writer(), o.Runner, o.Clock, host, o.Config.ProbeTimeout)
 		if state == nil {
-			reportHost(o.writer(), host.Name, "WARNING: cannot read the boot state over SSH. The reboot "+
-				"command will likely fail the same way, and the reboot cannot be verified.")
+			if carried {
+				reportHost(o.writer(), host.Name, "WARNING: cannot read the boot state over SSH, so a "+
+					"reboot carried from its host cannot be credited; it will be rebooted in its own tier.")
+			} else {
+				reportHost(o.writer(), host.Name, "WARNING: cannot read the boot state over SSH. The reboot "+
+					"command will likely fail the same way, and the reboot cannot be verified.")
+			}
 		}
-		baselines[host.Name] = state
+		into[host.Name] = state
 	}
-	return baselines
 }
 
 // verifyTier re-reads each host's boot identity and compares it to the baseline.

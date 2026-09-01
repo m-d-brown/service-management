@@ -186,7 +186,15 @@ func parseArgs(args []string) (options, []string, error) {
 				"  addr       address to ping and ssh to (default: the host name)\n"+
 				"  user       ssh login user (default: --user)\n"+
 				"  ssh-arg    extra ssh argument; repeatable\n"+
-				"  after      reboot this host only once the named host is back; repeatable\n\n"+
+				"  after      reboot this host only once the named host is back. An ordering\n"+
+				"             and nothing more; repeatable\n"+
+				"  runs-on    the host this one is hosted by, whose reboot restarts it. Orders\n"+
+				"             like after, and lets the carried reboot be credited rather than\n"+
+				"             given twice; at most one\n"+
+				"  not-with   never reboot this host in the same tier as the named one.\n"+
+				"             Symmetric, and orders nothing; repeatable\n"+
+				"  ready      the command proving this host is back, run on it over ssh\n"+
+				"             (default: true, meaning a completed login)\n\n"+
 				"Specs also arrive on stdin, one per line, which is how a topology kept in\n"+
 				"an Ansible inventory reaches this tool:\n\n"+
 				"  ansible-inventory-reboot-hosts -i inventory.yml | %s vm-a vm-b\n\n"+

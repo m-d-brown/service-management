@@ -338,3 +338,99 @@ func TestBuildPlanDeduplicatesRepeatedTarget(t *testing.T) {
 		t.Errorf("user = %q, want root from the later mention", got)
 	}
 }
+
+func TestParseSpecRelations(t *testing.T) {
+	got, err := ParseSpec("vm-a,addr=10.0.0.21,runs-on=hv1,after=dns1,after=dns2," +
+		"not-with=vm-b,ready=systemctl is-active nginx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Host{
+		Name:    "vm-a",
+		Addr:    "10.0.0.21",
+		RunsOn:  "hv1",
+		After:   []string{"dns1", "dns2"},
+		NotWith: []string{"vm-b"},
+		Ready:   "systemctl is-active nginx",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseSpec() = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseSpecRejectsRepeatedSingletons(t *testing.T) {
+	// A host is in one place at a time, and one readiness command keeps the
+	// question of how several would combine from ever arising: an operator
+	// wanting two tests writes them joined with &&.
+	tests := []struct {
+		name string
+		spec string
+		want string
+	}{
+		{
+			name: "two hosting parents",
+			spec: "vm-a,runs-on=hv1,runs-on=hv2",
+			want: "runs on at most one other",
+		},
+		{
+			name: "two readiness commands",
+			spec: "dns1,ready=true,ready=false",
+			want: "joining tests with &&",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseSpec(tt.spec)
+			if err == nil {
+				t.Fatalf("ParseSpec(%q) = nil error, want one", tt.spec)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatSpecRoundTripsRelations(t *testing.T) {
+	// The spec format is the boundary between the inventory converter and the
+	// orchestrator, so anything one side can express the other has to read back
+	// unchanged — including a readiness command carrying the field delimiter,
+	// which is quoted as a CSV field rather than through an escape invented
+	// here.
+	hosts := []Host{
+		{Name: "hv1", Addr: "10.0.0.5", User: "root"},
+		{
+			Name:    "vm-a",
+			Addr:    "10.0.0.21",
+			User:    "admin",
+			SSHArgs: []string{"-o", "StrictHostKeyChecking=no"},
+			RunsOn:  "hv1",
+			After:   []string{"dns1"},
+			NotWith: []string{"vm-b"},
+			Ready:   "systemctl is-active named,nsd",
+		},
+	}
+	for _, want := range hosts {
+		spec := FormatSpec(want)
+		got, err := ParseSpec(spec)
+		if err != nil {
+			t.Fatalf("ParseSpec(%q) = %v", spec, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("round trip through %q gave %+v, want %+v", spec, got, want)
+		}
+	}
+}
+
+func TestBuildPlanRejectsContradictoryRelations(t *testing.T) {
+	// A contradiction is surfaced while the plan is built, before the operator
+	// is asked to approve anything, rather than after the first tier has
+	// already rebooted.
+	specs, err := ParseSpecs([]string{"hv1", "vm-a,runs-on=hv1,not-with=hv1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildPlan(specs, nil, Defaults{}, true); err == nil {
+		t.Fatal("BuildPlan() = nil error, want the contradiction rejected")
+	}
+}

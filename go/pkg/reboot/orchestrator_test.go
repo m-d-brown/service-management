@@ -135,7 +135,14 @@ func (f *fleet) start(c call) {
 	// watching for, and takes anything running on it down too.
 	f.downFor[dest] = rebootDownSamples
 	for _, guest := range f.guests[dest] {
+		// A guest is power-cycled by its hypervisor whether or not anyone
+		// asked, which regenerates its boot id exactly as its own reboot would
+		// and clears whatever it was waiting on a reboot to apply. That is the
+		// free reboot a declared hosting relationship lets the run credit.
 		f.downFor[guest] = rebootDownSamples
+		f.reboots[guest]++
+		f.bootIDs[guest] = fmt.Sprintf("boot-%s-%d", guest, f.reboots[guest])
+		delete(f.pending, guest)
 	}
 	// A real reboot regenerates the kernel's boot id and clears any pending
 	// reboot the host was reporting.
@@ -606,5 +613,241 @@ func TestRunReportsAHostThatNeverLeftTheNetwork(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "switch1: [warn] answered every probe") {
 		t.Errorf("output = %q, want the never-dropped warning", out.String())
+	}
+}
+
+func TestRunCreditsACarriedReboot(t *testing.T) {
+	// The reason runs-on exists. The hypervisor's reboot power-cycles the guest,
+	// so by the time the guest's tier comes up it restarted two minutes ago and
+	// has the changed boot id to prove it. Rebooting it again applies nothing
+	// and costs the fleet a second outage.
+	f := newFleet("10.0.0.5", "10.0.0.21")
+	f.guests["10.0.0.5"] = []string{"10.0.0.21"}
+	runner := f.runner()
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &out}
+	plan := newPlan(t, []string{
+		"hv1,addr=10.0.0.5",
+		"vm-a,addr=10.0.0.21,runs-on=hv1",
+	})
+
+	result, err := orch.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// One reboot command for two rebooted hosts.
+	equalStrings(t, "reboot commands", rebootedDestinations(runner), []string{"10.0.0.5"})
+
+	// The guest is still reported, and reported as confirmed: it did reboot,
+	// and the run proved it rather than assuming it from the declaration.
+	if len(result.Verifications) != 2 {
+		t.Fatalf("got %d verifications, want both hosts accounted for", len(result.Verifications))
+	}
+	var guest *RebootVerification
+	for i, v := range result.Verifications {
+		if v.Host == "vm-a" {
+			guest = &result.Verifications[i]
+		}
+	}
+	if guest == nil {
+		t.Fatal("vm-a is missing from the summary; a credited reboot is still a reboot")
+	}
+	if guest.Status != StatusConfirmed {
+		t.Errorf("vm-a status = %v (%s), want confirmed", guest.Status, guest.Detail)
+	}
+	if !strings.Contains(guest.Detail, "rebooted with hv1") {
+		t.Errorf("detail = %q, want the reboot attributed to its host", guest.Detail)
+	}
+	if len(result.NotRebooted()) != 0 {
+		t.Errorf("NotRebooted() = %v, want none", result.NotRebooted())
+	}
+
+	for _, want := range []string{
+		"Recording boot state of the hosts this tier will carry down",
+		"Checking the hosts this tier carried down",
+		"vm-a: skipping — already rebooted with hv1",
+		"Tier 2 was rebooted by the tier hosting it",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output = %q, want it to contain %q", out.String(), want)
+		}
+	}
+}
+
+func TestRunRebootsAGuestThatWasNotActuallyCarried(t *testing.T) {
+	// Nothing is taken on the strength of the declaration itself. A guest that
+	// has been migrated away is still declared to run here, but its boot id
+	// does not change when this hypervisor restarts, so it keeps its own tier
+	// and is rebooted there — the outcome the run would have had if hosting had
+	// never been declared at all.
+	f := newFleet("10.0.0.5", "10.0.0.21")
+	runner := f.runner()
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &out}
+	plan := newPlan(t, []string{
+		"hv1,addr=10.0.0.5",
+		"vm-a,addr=10.0.0.21,runs-on=hv1",
+	})
+
+	result, err := orch.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	equalStrings(t, "reboot commands", rebootedDestinations(runner),
+		[]string{"10.0.0.5", "10.0.0.21"})
+	if len(result.NotRebooted()) != 0 {
+		t.Errorf("NotRebooted() = %v, want none: the guest was rebooted in its own tier",
+			result.NotRebooted())
+	}
+	// Not being carried is not a failure — nothing was asked of the guest at
+	// that point — so it is reported without a verdict glyph and left alone.
+	if !strings.Contains(out.String(), "vm-a: not credited, so it keeps its own tier") {
+		t.Errorf("output = %q, want the uncredited guest explained", out.String())
+	}
+	// And the contradiction is surfaced: the hosting is the likeliest mistake.
+	if !strings.Contains(out.String(), "vm-a: [warn] answered every probe while hv1 went down") {
+		t.Errorf("output = %q, want the stale hosting reported", out.String())
+	}
+}
+
+func TestRunCreditsThroughAHostingChain(t *testing.T) {
+	// Hosting is transitive: rebooting the hypervisor restarts the guest and
+	// everything inside the guest, so one command settles all three.
+	f := newFleet("10.0.0.5", "10.0.0.21", "10.0.0.31")
+	f.guests["10.0.0.5"] = []string{"10.0.0.21", "10.0.0.31"}
+	runner := f.runner()
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &out}
+	plan := newPlan(t, []string{
+		"hv1,addr=10.0.0.5",
+		"vm-a,addr=10.0.0.21,runs-on=hv1",
+		"ctr-1,addr=10.0.0.31,runs-on=vm-a",
+	})
+
+	result, err := orch.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	equalStrings(t, "reboot commands", rebootedDestinations(runner), []string{"10.0.0.5"})
+	if len(result.Verifications) != 3 {
+		t.Fatalf("got %d verifications, want all three hosts accounted for", len(result.Verifications))
+	}
+	for _, v := range result.Verifications {
+		if v.Status != StatusConfirmed {
+			t.Errorf("%s: status = %v (%s), want confirmed", v.Host, v.Status, v.Detail)
+		}
+	}
+}
+
+func TestRunDoesNotCreditWithoutVerification(t *testing.T) {
+	// A reboot is skipped because it demonstrably already happened, never
+	// because the topology said it should have. With nothing read from the
+	// hosts there is no proof, so the guest is rebooted in its own tier.
+	f := newFleet("10.0.0.5", "10.0.0.21")
+	f.guests["10.0.0.5"] = []string{"10.0.0.21"}
+	runner := f.runner()
+
+	cfg := testConfig()
+	cfg.VerifyBootState = false
+	orch := &Orchestrator{Config: cfg, Runner: runner, Clock: newFakeClock(), Out: &bytes.Buffer{}}
+	plan := newPlan(t, []string{
+		"hv1,addr=10.0.0.5",
+		"vm-a,addr=10.0.0.21,runs-on=hv1",
+	})
+
+	if _, err := orch.Run(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	equalStrings(t, "reboot commands", rebootedDestinations(runner),
+		[]string{"10.0.0.5", "10.0.0.21"})
+}
+
+func TestRunLeavesUntargetedGuestsUnprobed(t *testing.T) {
+	// A guest no later tier means to reboot is watched all the same — the tier
+	// is not finished until it is back — but nothing is asked of it. On a
+	// hypervisor with forty guests, the alternative is forty connections spent
+	// on a question no one asked.
+	f := newFleet("10.0.0.5", "10.0.0.21")
+	f.guests["10.0.0.5"] = []string{"10.0.0.21"}
+	runner := f.runner()
+
+	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &bytes.Buffer{}}
+	plan := newPlan(t, []string{
+		"hv1,addr=10.0.0.5",
+		"vm-a,addr=10.0.0.21,runs-on=hv1",
+	}, "hv1")
+
+	if _, err := orch.Run(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := runner.countMatching("ping -c 1 -W 1 10.0.0.21"); got == 0 {
+		t.Error("the guest was never pinged, want it waited for")
+	}
+	if got := runner.countMatching("boot_id"); got != 2 {
+		t.Errorf("read boot state %d times, want only the targeted hypervisor's before and after", got)
+	}
+}
+
+func TestRunSeparatesExcludedHosts(t *testing.T) {
+	// Neither host is ordered before the other; they simply may not go down
+	// together, which for an HA pair is the one outcome to avoid.
+	f := newFleet("10.0.0.41", "10.0.0.42")
+	runner := f.runner()
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &out}
+	plan := newPlan(t, []string{
+		"dns1,addr=10.0.0.41,not-with=dns2",
+		"dns2,addr=10.0.0.42",
+	})
+
+	result, err := orch.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both reboot, in separate tiers, so one is always serving.
+	equalStrings(t, "reboot order", rebootedDestinations(runner),
+		[]string{"10.0.0.41", "10.0.0.42"})
+	if len(result.Verifications) != 2 {
+		t.Fatalf("got %d verifications, want both hosts rebooted", len(result.Verifications))
+	}
+	for _, i := range []int{1, 2} {
+		if !strings.Contains(out.String(), fmt.Sprintf("=== Executing Tier: %d ===", i)) {
+			t.Errorf("output is missing tier %d; the pair shared a tier", i)
+		}
+	}
+}
+
+func TestRunWaitsForTheReadinessCommandBeforeTheNextTier(t *testing.T) {
+	// What a host ordered after a provider is waiting for is the service, not
+	// the login. The tier boundary is where that distinction is cashed in.
+	f := newFleet("10.0.0.41", "10.0.0.30")
+	runner := f.runner()
+	var out bytes.Buffer
+
+	orch := &Orchestrator{Config: testConfig(), Runner: runner, Clock: newFakeClock(), Out: &out}
+	plan := newPlan(t, []string{
+		"dns1,addr=10.0.0.41,ready=systemctl is-active named",
+		"web1,addr=10.0.0.30,after=dns1",
+	})
+
+	if _, err := orch.Run(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := runner.countMatching("systemctl is-active named"); got == 0 {
+		t.Error("the readiness command was never run, want it gating the tier")
+	}
+	// The host that declared nothing is still checked with a bare login.
+	if got := runner.countMatching("10.0.0.30 true"); got == 0 {
+		t.Error("web1 was never probed with the default login test")
 	}
 }

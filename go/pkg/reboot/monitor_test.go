@@ -353,3 +353,165 @@ func TestCycleZeroValueIsNotEvidence(t *testing.T) {
 		t.Error("StayedUp() = true before the drop wait elapsed")
 	}
 }
+
+func TestMonitorWaitsForTheReadinessCommand(t *testing.T) {
+	// A machine accepts logins well before it is serving anything, and what the
+	// tier behind it is waiting for is the service. So a host that declared a
+	// readiness command is tested against that, not against a bare login.
+	ready := "dig +short @127.0.0.1 example.internal"
+	script := scriptedRunner(map[string][]reachability{"dns1": {up, down, down, up}})
+	runner := &fakeRunner{respond: script.respond}
+
+	var out bytes.Buffer
+	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
+		Watchlist{Targets: []Host{{Name: "dns1", Ready: ready}}},
+		time.Second, time.Second, time.Second, time.Minute)
+	monitor.StartDropWait()
+	if err := monitor.WaitForReturn(context.Background()); err != nil {
+		t.Fatalf("WaitForReturn() = %v, want nil", err)
+	}
+	monitor.Stop()
+
+	for _, remote := range runner.remotes() {
+		if remote != ready {
+			t.Errorf("ssh ran %q, want the declared readiness command %q", remote, ready)
+		}
+	}
+	if len(runner.remotes()) == 0 {
+		t.Error("the readiness command was never run")
+	}
+	if !strings.Contains(out.String(), "waiting for readiness: "+ready) {
+		t.Errorf("output = %q, want the wait to name what it is waiting for", out.String())
+	}
+}
+
+func TestMonitorWaitsForABareLoginByDefault(t *testing.T) {
+	// A host that declared nothing is tested for a completed login, which is
+	// all that can be assumed of it — and already far more than answering ping.
+	script := scriptedRunner(map[string][]reachability{"web1": {up, down, up}})
+	runner := &fakeRunner{respond: script.respond}
+
+	var out bytes.Buffer
+	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
+		Watchlist{Targets: []Host{{Name: "web1"}}},
+		time.Second, time.Second, time.Second, time.Minute)
+	monitor.StartDropWait()
+	if err := monitor.WaitForReturn(context.Background()); err != nil {
+		t.Fatalf("WaitForReturn() = %v, want nil", err)
+	}
+	monitor.Stop()
+
+	for _, remote := range runner.remotes() {
+		if remote != "true" {
+			t.Errorf("ssh ran %q, want the default login test", remote)
+		}
+	}
+	if !strings.Contains(out.String(), "waiting for SSH") {
+		t.Errorf("output = %q, want the default wait to say SSH", out.String())
+	}
+}
+
+func TestMonitorReportsWhyAReadinessCommandFailed(t *testing.T) {
+	// A command that will never pass — a typo, a binary that is not installed —
+	// is otherwise indistinguishable from a service still starting: both are
+	// silence. One line saying why turns an unexplained wait into something an
+	// operator can act on.
+	inner := scriptedRunner(map[string][]reachability{"dns1": {down, {ping: true}}})
+	failed := make(chan struct{})
+	var once sync.Once
+	runner := &fakeRunner{respond: func(c call) (string, error) {
+		if c.name == "ssh" {
+			once.Do(func() { close(failed) })
+			return "", errors.New("sh: 1: dgi: not found")
+		}
+		return inner.respond(c)
+	}}
+
+	var out bytes.Buffer
+	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
+		Watchlist{Targets: []Host{{Name: "dns1", Ready: "dgi +short localhost"}}},
+		time.Second, time.Second, time.Second, time.Minute)
+	monitor.StartDropWait()
+	<-failed
+	monitor.Stop()
+
+	if !strings.Contains(out.String(), "dns1: [wait] not ready yet:") {
+		t.Errorf("output = %q, want the first readiness failure explained", out.String())
+	}
+	if !strings.Contains(out.String(), "dgi: not found") {
+		t.Errorf("output = %q, want the command's own error carried through", out.String())
+	}
+	// Said once. Every later failure is the ordinary shape of waiting.
+	if got := strings.Count(out.String(), "[wait] not ready yet"); got != 1 {
+		t.Errorf("the failure is reported %d times, want once", got)
+	}
+}
+
+func TestMonitorSaysNothingWhenSSHIsSimplyNotUpYet(t *testing.T) {
+	// For a host with no readiness command a failed probe means sshd has not
+	// started, which is the expected middle of every reboot and not news.
+	_, out := runMonitor(t, "web1",
+		[]reachability{up, down, {ping: true}, {ping: true}, up}, time.Minute)
+
+	if strings.Contains(out, "[wait]") {
+		t.Errorf("output = %q, want no complaint about an ordinary reboot", out)
+	}
+}
+
+func TestMonitorWarnsAboutAGuestThatStayedUp(t *testing.T) {
+	// A guest that answered every probe while the machine it claims to run on
+	// went down contradicts the claim, and the claim is the likelier thing to
+	// be wrong: a guest migrated to another hypervisor looks exactly like this.
+	var out bytes.Buffer
+	runner := scriptedRunner(map[string][]reachability{
+		"hv1":  {up, down, down, up},
+		"vm-a": {up},
+	})
+	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
+		Watchlist{
+			Targets: []Host{{Name: "hv1"}},
+			Carried: []Host{{Name: "vm-a", RunsOn: "hv1"}},
+		},
+		time.Second, time.Second, time.Second, 3*time.Second)
+	monitor.StartDropWait()
+	if err := monitor.WaitForReturn(context.Background()); err != nil {
+		t.Fatalf("WaitForReturn() = %v, want nil", err)
+	}
+	monitor.Stop()
+
+	if !strings.Contains(out.String(), "vm-a: [warn] answered every probe while hv1 went down") {
+		t.Errorf("output = %q, want the contradicted hosting reported", out.String())
+	}
+	if !strings.Contains(out.String(), "may no longer run there") {
+		t.Errorf("output = %q, want the likely explanation offered", out.String())
+	}
+	if got := strings.Count(out.String(), "vm-a: [warn]"); got != 1 {
+		t.Errorf("warning count = %d, want it said once rather than every sample", got)
+	}
+}
+
+func TestMonitorSaysNothingOfAGuestWhoseHostStayedUp(t *testing.T) {
+	// A hypervisor that ignored its own reboot explains a still-answering guest
+	// completely, and already has a line of its own. Two warnings for one fault
+	// would put the blame in the wrong place.
+	var out bytes.Buffer
+	runner := scriptedRunner(map[string][]reachability{"hv1": {up}, "vm-a": {up}})
+	monitor := StartMonitor(context.Background(), &out, runner, newFakeClock(),
+		Watchlist{
+			Targets: []Host{{Name: "hv1"}},
+			Carried: []Host{{Name: "vm-a", RunsOn: "hv1"}},
+		},
+		time.Second, time.Second, time.Second, 3*time.Second)
+	monitor.StartDropWait()
+	if err := monitor.WaitForReturn(context.Background()); err != nil {
+		t.Fatalf("WaitForReturn() = %v, want nil", err)
+	}
+	monitor.Stop()
+
+	if !strings.Contains(out.String(), "hv1: [warn] answered every probe") {
+		t.Errorf("output = %q, want the target that never left the network reported", out.String())
+	}
+	if strings.Contains(out.String(), "vm-a: [warn]") {
+		t.Errorf("output = %q, want no warning about the guest of a host that never went down", out.String())
+	}
+}

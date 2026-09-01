@@ -265,3 +265,106 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Errorf("error = %q, want it to explain the file could not be read", err)
 	}
 }
+
+func TestParseReadsRelationships(t *testing.T) {
+	inventory := `
+all:
+  hosts:
+    hv1:
+      ip_addr: 10.0.0.5
+    vm-a:
+      ip_addr: 10.0.0.21
+      runs_on: hv1
+    dns1:
+      ip_addr: 10.0.0.41
+      not_with: [dns2]
+      ready: systemctl is-active named
+    dns2:
+      ip_addr: 10.0.0.42
+    web1:
+      ip_addr: 10.0.0.30
+      depends_on: [vm-a, dns1]
+`
+	hosts, err := Parse([]byte(inventory))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byName := map[string]reboot.Host{}
+	for _, host := range hosts {
+		byName[host.Name] = host
+	}
+
+	// Hosting and ordering stay distinct all the way through the converter:
+	// rebooting hv1 restarts vm-a, while rebooting vm-a does nothing to web1.
+	if got := byName["vm-a"].RunsOn; got != "hv1" {
+		t.Errorf("vm-a RunsOn = %q, want hv1", got)
+	}
+	if got := byName["vm-a"].After; len(got) != 0 {
+		t.Errorf("vm-a After = %v, want none: runs_on is not depends_on", got)
+	}
+	if got := byName["web1"].After; !reflect.DeepEqual(got, []string{"vm-a", "dns1"}) {
+		t.Errorf("web1 After = %v, want [vm-a dns1]", got)
+	}
+	if got := byName["web1"].RunsOn; got != "" {
+		t.Errorf("web1 RunsOn = %q, want empty", got)
+	}
+	if got := byName["dns1"].NotWith; !reflect.DeepEqual(got, []string{"dns2"}) {
+		t.Errorf("dns1 NotWith = %v, want [dns2]", got)
+	}
+	if got, want := byName["dns1"].Ready, "systemctl is-active named"; got != want {
+		t.Errorf("dns1 Ready = %q, want %q", got, want)
+	}
+}
+
+func TestParseRejectsUnknownRelationshipTargets(t *testing.T) {
+	// A typo is reported against the file it was typed into rather than
+	// against the spec stream it became.
+	tests := []struct {
+		name      string
+		inventory string
+		want      string
+	}{
+		{
+			name: "unknown hosting parent",
+			inventory: `
+all:
+  hosts:
+    vm-a:
+      runs_on: hv9
+`,
+			want: `runs on "hv9"`,
+		},
+		{
+			name: "unknown exclusion",
+			inventory: `
+all:
+  hosts:
+    dns1:
+      not_with: [dns9]
+`,
+			want: `must not reboot with "dns9"`,
+		},
+		{
+			name: "empty exclusion entry",
+			inventory: `
+all:
+  hosts:
+    dns1:
+      not_with: [""]
+`,
+			want: "not_with contains an empty entry",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.inventory))
+			if err == nil {
+				t.Fatalf("Parse() = nil error, want one mentioning %q", tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}

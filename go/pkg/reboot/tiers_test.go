@@ -170,3 +170,165 @@ func TestPrintTreeMarksRepeatedHost(t *testing.T) {
 		t.Errorf("PrintTree() =\n%s\nwant the repeat marked as already listed", out.String())
 	}
 }
+
+func TestBuildTiersOrdersHostingLikeAnOrdering(t *testing.T) {
+	// Hosting implies its ordering, so a guest never reboots before the machine
+	// underneath it, whether that was written as after or as runs-on.
+	hosts := Hosts{
+		"hv1":   {Name: "hv1"},
+		"vm-a":  {Name: "vm-a", RunsOn: "hv1"},
+		"vm-b":  {Name: "vm-b", RunsOn: "hv1"},
+		"ctr-1": {Name: "ctr-1", RunsOn: "vm-a"},
+	}
+	tiers, err := BuildTiers(hosts, []string{"ctr-1", "vm-a", "vm-b", "hv1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := joinTiers(tiers), "hv1 | vm-a,vm-b | ctr-1"; got != want {
+		t.Errorf("BuildTiers() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildTiersSeparatesExcludedHosts(t *testing.T) {
+	tests := []struct {
+		name    string
+		hosts   Hosts
+		targets []string
+		want    string
+	}{
+		{
+			// The pair would otherwise share a tier and go down together,
+			// which for an HA pair is the one outcome to avoid. Neither is
+			// ordered before the other; name order decides, deterministically.
+			name: "an HA pair is split across tiers",
+			hosts: Hosts{
+				"dns1": {Name: "dns1", NotWith: []string{"dns2"}},
+				"dns2": {Name: "dns2"},
+			},
+			targets: []string{"dns1", "dns2"},
+			want:    "dns1 | dns2",
+		},
+		{
+			// Only the pair is separated. A host with no exclusion of its own
+			// stays in the first tier it was ready for.
+			name: "unrelated hosts are not delayed",
+			hosts: Hosts{
+				"dns1": {Name: "dns1", NotWith: []string{"dns2"}},
+				"dns2": {Name: "dns2"},
+				"web":  {Name: "web"},
+			},
+			targets: []string{"dns1", "dns2", "web"},
+			want:    "dns1,web | dns2",
+		},
+		{
+			// Three mutually exclusive hosts need three tiers: admitting one
+			// rules out both others for that round.
+			name: "a quorum goes one at a time",
+			hosts: Hosts{
+				"etcd1": {Name: "etcd1", NotWith: []string{"etcd2", "etcd3"}},
+				"etcd2": {Name: "etcd2", NotWith: []string{"etcd3"}},
+				"etcd3": {Name: "etcd3"},
+			},
+			targets: []string{"etcd1", "etcd2", "etcd3"},
+			want:    "etcd1 | etcd2 | etcd3",
+		},
+		{
+			// A host held back by an exclusion carries everything behind it,
+			// which is what makes thinning the ready set inside Kahn's loop
+			// correct where splitting finished tiers afterwards would not be.
+			name: "a delayed host delays its own dependents",
+			hosts: Hosts{
+				"dns1": {Name: "dns1", NotWith: []string{"dns2"}},
+				"dns2": {Name: "dns2"},
+				"web":  {Name: "web", After: []string{"dns2"}},
+			},
+			targets: []string{"dns1", "dns2", "web"},
+			want:    "dns1 | dns2 | web",
+		},
+		{
+			// Written on either host, the exclusion binds both.
+			name: "the exclusion is read from either end",
+			hosts: Hosts{
+				"dns1": {Name: "dns1"},
+				"dns2": {Name: "dns2", NotWith: []string{"dns1"}},
+			},
+			targets: []string{"dns1", "dns2"},
+			want:    "dns1 | dns2",
+		},
+		{
+			// An exclusion naming a host this run does not touch constrains
+			// nothing, the same way an ordering to an untargeted host does not.
+			name: "an untargeted exclusion is ignored",
+			hosts: Hosts{
+				"dns1": {Name: "dns1", NotWith: []string{"dns2"}},
+				"dns2": {Name: "dns2"},
+				"web":  {Name: "web"},
+			},
+			targets: []string{"dns1", "web"},
+			want:    "dns1,web",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tiers, err := BuildTiers(tt.hosts, tt.targets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := joinTiers(tiers); got != tt.want {
+				t.Errorf("BuildTiers() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrintTreeMarksHostingBranches(t *testing.T) {
+	// The nesting alone cannot say which edge put a host under a parent, and
+	// the two mean different things: the hosting branch is the one that will
+	// not cost a reboot of its own.
+	hosts := Hosts{
+		"hv1":  {Name: "hv1"},
+		"vm-a": {Name: "vm-a", RunsOn: "hv1"},
+		"web":  {Name: "web", After: []string{"vm-a"}},
+	}
+	var out bytes.Buffer
+	PrintTree(&out, hosts, []string{"hv1", "vm-a", "web"})
+
+	want := strings.Join([]string{
+		"└── hv1",
+		"    └── vm-a (runs on hv1)",
+		"        └── web",
+		"",
+	}, "\n")
+	if out.String() != want {
+		t.Errorf("PrintTree() =\n%s\nwant\n%s", out.String(), want)
+	}
+}
+
+func TestPrintTreeListsExclusions(t *testing.T) {
+	// An exclusion produces no nesting, so the tree cannot show it — yet it
+	// changes what the run does. Unsaid, a plan that correctly separated an HA
+	// pair would read exactly like one that had forgotten the pair existed.
+	hosts := Hosts{
+		"dns1": {Name: "dns1", NotWith: []string{"dns2"}},
+		"dns2": {Name: "dns2"},
+		"web":  {Name: "web"},
+	}
+	var out bytes.Buffer
+	PrintTree(&out, hosts, []string{"dns1", "dns2", "web"})
+
+	if !strings.Contains(out.String(), "Never rebooted together: dns1 / dns2") {
+		t.Errorf("PrintTree() =\n%s\nwant the exclusion listed", out.String())
+	}
+	// A pair is named once, from whichever end declared it.
+	if got := strings.Count(out.String(), "dns1 / dns2"); got != 1 {
+		t.Errorf("the pair is listed %d times, want once", got)
+	}
+}
+
+func TestPrintTreeSaysNothingWithoutExclusions(t *testing.T) {
+	var out bytes.Buffer
+	PrintTree(&out, topology(), []string{"hv1", "vm-a"})
+	if strings.Contains(out.String(), "Never rebooted together") {
+		t.Errorf("PrintTree() =\n%s\nwant no exclusion line when there are none", out.String())
+	}
+}

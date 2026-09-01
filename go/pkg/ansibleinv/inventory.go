@@ -41,8 +41,15 @@ type hostVars struct {
 	AnsibleUser scalar `yaml:"ansible_user"`
 	// SSHCommonArgs is one string of extra ssh arguments.
 	SSHCommonArgs scalar `yaml:"ansible_ssh_common_args"`
-	// DependsOn names the hosts that must be back online first.
+	// DependsOn names the hosts that must be back online first. It is an
+	// ordering and makes no claim about what a reboot of those hosts does here.
 	DependsOn []string `yaml:"depends_on"`
+	// RunsOn names the host this one is hosted by, whose reboot restarts it.
+	RunsOn scalar `yaml:"runs_on"`
+	// NotWith names hosts this one must never reboot alongside.
+	NotWith []string `yaml:"not_with"`
+	// Ready is the command that proves this host is serving again.
+	Ready scalar `yaml:"ready"`
 }
 
 // scalar is a YAML scalar read as text whatever its type. An inventory writes
@@ -143,10 +150,13 @@ func flatten(g group, into map[string][]hostVars) {
 // hostFromVars builds a host from one host's inventory variables.
 func hostFromVars(name string, vars hostVars) (reboot.Host, error) {
 	host := reboot.Host{
-		Name:  name,
-		Addr:  string(firstSet(vars.IPAddr, vars.AnsibleHost)),
-		User:  string(vars.AnsibleUser),
-		After: vars.DependsOn,
+		Name:    name,
+		Addr:    string(firstSet(vars.IPAddr, vars.AnsibleHost)),
+		User:    string(vars.AnsibleUser),
+		After:   vars.DependsOn,
+		RunsOn:  string(vars.RunsOn),
+		NotWith: vars.NotWith,
+		Ready:   string(vars.Ready),
 	}
 
 	if args := string(vars.SSHCommonArgs); args != "" {
@@ -164,6 +174,11 @@ func hostFromVars(name string, vars hostVars) (reboot.Host, error) {
 			return reboot.Host{}, fmt.Errorf("host %q: depends_on contains an empty entry", name)
 		}
 	}
+	for _, peer := range host.NotWith {
+		if peer == "" {
+			return reboot.Host{}, fmt.Errorf("host %q: not_with contains an empty entry", name)
+		}
+	}
 	return host, nil
 }
 
@@ -176,9 +191,16 @@ func firstSet(preferred, fallback scalar) scalar {
 	return fallback
 }
 
-// validateDependencies checks that every declared dependency names a host the
+// validateDependencies checks that every host a relationship names is one the
 // inventory actually defines. Catching it here means the orchestrator is handed
-// a topology that already holds together.
+// a topology that already holds together, and that a typo is reported against
+// the file it was typed into rather than against the spec stream it became.
+//
+// Only the references are checked. Whether the relationships contradict each
+// other — a hosting chain that closes on itself, an exclusion between a guest
+// and the hypervisor it cannot help rebooting with — is settled once, in the
+// orchestrator, against the full host set the run will actually act on. That
+// set can be wider than any single inventory.
 func validateDependencies(hosts []reboot.Host) error {
 	known := make(map[string]bool, len(hosts))
 	for _, host := range hosts {
@@ -189,6 +211,16 @@ func validateDependencies(hosts []reboot.Host) error {
 			if !known[dep] {
 				return fmt.Errorf("host %q depends on %q, which does not exist in the inventory",
 					host.Name, dep)
+			}
+		}
+		if host.RunsOn != "" && !known[host.RunsOn] {
+			return fmt.Errorf("host %q runs on %q, which does not exist in the inventory",
+				host.Name, host.RunsOn)
+		}
+		for _, peer := range host.NotWith {
+			if !known[peer] {
+				return fmt.Errorf("host %q must not reboot with %q, which does not exist in the inventory",
+					host.Name, peer)
 			}
 		}
 	}

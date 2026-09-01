@@ -29,19 +29,42 @@ const monitorConcurrency = 8
 
 // Watchlist is what one tier asks the monitor to watch.
 //
-// Both halves are sampled identically; they differ in what a host answering
-// throughout is worth. A target was told to reboot, so never leaving the
-// network is evidence it did not. A dependent was told nothing, and is watched
-// only in case the target's reboot takes it down — which its After edge does
-// not actually promise, that edge being an ordering and not a statement about
-// what runs where. So a dependent that stays up says nothing at all.
+// All three groups are sampled identically. They differ only in what a host
+// answering throughout is worth, which is precisely what the fleet's three
+// relationships disagree about:
+//
+//   - A target was told to reboot, so never leaving the network is evidence it
+//     did not.
+//   - A carried host runs on a target, which is a claim that the target's
+//     reboot restarts it. Never leaving the network while its parent went down
+//     contradicts that claim, and the claim is the more likely thing to be
+//     wrong: a guest that has been migrated elsewhere looks exactly like this.
+//   - A dependent is ordered after a target and nothing more. It is watched
+//     only in case it goes down, because its After edge never promised it
+//     would, so a dependent that stays up says nothing at all.
 type Watchlist struct {
 	// Targets are the hosts this tier issues a reboot command to.
 	Targets []Host
+	// Carried are hosts hosted by a target, transitively, whose reboot the
+	// target's own reboot delivers.
+	Carried []Host
 	// Dependents are hosts watched only because a target's reboot may take
 	// them down.
 	Dependents []Host
 }
+
+// watchRole is why a host is being watched, which is what its behaviour is
+// worth as evidence. See Watchlist.
+type watchRole int
+
+const (
+	// roleTarget was issued a reboot command.
+	roleTarget watchRole = iota
+	// roleCarried is hosted by a target and expected to go down with it.
+	roleCarried
+	// roleDependent is ordered after a target and nothing more.
+	roleDependent
+)
 
 // Cycle is what the monitor saw of one host's power cycle.
 //
@@ -89,9 +112,8 @@ func (c Cycle) DownFor() time.Duration {
 type watch struct {
 	// host is what to probe.
 	host Host
-	// targeted records that this host was issued a reboot command, which is
-	// what makes it never dropping worth remarking on.
-	targeted bool
+	// role is why this host is watched, and so what its never dropping means.
+	role watchRole
 	// up records whether the last sample was answered.
 	up bool
 	// dropped records that the host has been seen to stop answering.
@@ -104,6 +126,9 @@ type watch struct {
 	// warned records that the never-dropped warning has been printed, so it is
 	// said once rather than on every remaining sample.
 	warned bool
+	// notReady records that this host's readiness command has been reported as
+	// failing, which is likewise said once rather than every sample.
+	notReady bool
 	// downAt is when the host was first seen to be gone.
 	downAt time.Time
 	// backAt is when SSH first answered again.
@@ -173,15 +198,18 @@ func StartMonitor(
 		pingTimeout: pingTimeout,
 		sshTimeout:  sshTimeout,
 		dropWait:    dropWait,
-		seen:        make(map[string]*watch, len(list.Targets)+len(list.Dependents)),
+		seen:        make(map[string]*watch, len(list.Targets)+len(list.Carried)+len(list.Dependents)),
 		stop:        make(chan struct{}),
 		exited:      make(chan struct{}),
 		settled:     make(chan struct{}),
 	}
-	// Targets are added first so a host named in both halves is watched as the
-	// target it is, rather than as the dependent it also happens to be.
-	m.add(list.Targets, true)
-	m.add(list.Dependents, false)
+	// Added strongest role first, so a host qualifying under several is watched
+	// as the most that is known about it: a host told to reboot is a target
+	// however else it is related, and a guest of this tier is carried even if
+	// something also merely orders itself after it.
+	m.add(list.Targets, roleTarget)
+	m.add(list.Carried, roleCarried)
+	m.add(list.Dependents, roleDependent)
 	slices.Sort(m.order)
 
 	if len(m.order) > 0 {
@@ -199,12 +227,12 @@ func StartMonitor(
 
 // add begins watching hosts, skipping any already watched. It runs before the
 // sampler starts, so it takes no lock.
-func (m *Monitor) add(hosts []Host, targeted bool) {
+func (m *Monitor) add(hosts []Host, role watchRole) {
 	for _, host := range hosts {
 		if _, ok := m.seen[host.Name]; ok {
 			continue
 		}
-		m.seen[host.Name] = &watch{host: host, targeted: targeted, up: true}
+		m.seen[host.Name] = &watch{host: host, role: role, up: true}
 		m.order = append(m.order, host.Name)
 	}
 }
@@ -386,11 +414,14 @@ func (m *Monitor) probe(ctx context.Context, w *watch, at time.Time) []string {
 		m.mu.Lock()
 		w.pingBack = true
 		m.mu.Unlock()
-		lines = append(lines,
-			hostLine(host.Name, "[ping] answers ping again at %s; waiting for SSH", stamp(at)))
+		lines = append(lines, hostLine(host.Name,
+			"[ping] answers ping again at %s; waiting for %s", stamp(at), waitingFor(host)))
 	}
 
-	if !m.sshAlive(ctx, host) {
+	if err := m.checkReady(ctx, host); err != nil {
+		if line := m.noteNotReady(w, host, err); line != "" {
+			lines = append(lines, line)
+		}
 		return lines
 	}
 
@@ -402,40 +433,103 @@ func (m *Monitor) probe(ctx context.Context, w *watch, at time.Time) []string {
 		hostLine(host.Name, "[back] is back at %s, after %s down", stamp(at), formatUptime(down)))
 }
 
-// sshAlive reports whether the host will accept an SSH session and run a
-// command. The command is the smallest one there is: what matters is that a
-// login completed, not what it produced.
-func (m *Monitor) sshAlive(ctx context.Context, host Host) bool {
+// checkReady runs the host's readiness command over SSH and reports what went
+// wrong, or nil once the host is usable.
+//
+// For a host that declared nothing this is true, and what is really being
+// tested is that a login completed at all — already far more than answering
+// ping, which the kernel does long before sshd will take a connection. A host
+// that declared a readiness command is tested against that instead, because
+// what the tier behind it is waiting for is the service, and a machine accepts
+// logins well before it is serving anything.
+//
+// The error is returned rather than folded into a boolean so a command that
+// will never pass can say why once, instead of being indistinguishable from a
+// service that has not finished starting.
+func (m *Monitor) checkReady(ctx context.Context, host Host) error {
 	ctx, cancel := context.WithTimeout(ctx, m.sshTimeout)
 	defer cancel()
-	_, err := m.runner.Run(ctx, "", "ssh", sshCommand(host, "true")...)
-	return err == nil
+	_, err := m.runner.Run(ctx, "", "ssh", sshCommand(host, host.ReadyCommand())...)
+	return err
 }
 
-// warnNeverDropped reports each targeted host that answered continuously past
-// the drop wait, once per host.
+// waitingFor names what still has to happen before a host counts as back.
 //
-// Only targets are worth a word. A dependent is watched in case a target's
-// reboot takes it down, not because anything was asked of it — and its After
-// edge only orders the two, so nothing said it would go down in the first
-// place. Warning there flagged the ordinary case, and buried the one host the
-// line exists for: a machine that was sent a reboot and never went anywhere.
+// The line an operator stares at during a long wait should say what is being
+// waited on. With a readiness command that is the command itself: a wait that
+// never ends is far more often a mistyped check than a machine that never came
+// back, and the two read identically until the check is on screen.
+func waitingFor(h Host) string {
+	if h.Ready == "" {
+		return "SSH"
+	}
+	return "readiness: " + h.Ready
+}
+
+// noteNotReady reports the first failure of a host's readiness command, once.
 //
-// The line still states only what was seen, not what it means. VerifyReboot
-// weighs it against the host's own boot markers and draws the conclusion; this
-// is the evidence it draws it from.
+// A command that will never pass — a typo, a binary that is not installed —
+// is otherwise indistinguishable from a service still starting up: both are
+// silence. One line saying why the first attempt failed turns an unexplained
+// wait into something an operator can act on. Later failures are the ordinary
+// shape of waiting and are not worth repeating. Hosts with no readiness command
+// say nothing here at all, because for them a failure means sshd is not up yet,
+// which is the expected middle of every reboot.
+func (m *Monitor) noteNotReady(w *watch, host Host, err error) string {
+	if host.Ready == "" {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if w.notReady {
+		return ""
+	}
+	w.notReady = true
+	return hostLine(host.Name, "[wait] not ready yet: %v", err)
+}
+
+// warnNeverDropped reports each host whose staying up contradicts something,
+// once per host.
+//
+// Two things can be contradicted, and they are different findings. A target was
+// sent a reboot and never went anywhere, which is about that machine. A carried
+// host stayed up while the machine it claims to run on went down, which is
+// about the topology: the likeliest explanation is that the guest no longer
+// lives there. Both are worth a word; a dependent staying up is not, because
+// its After edge never said it would go down, and warning there flagged the
+// ordinary case while burying the two lines that mean something.
+//
+// The lines state only what was seen, not what it means. VerifyReboot weighs
+// the same observation against the host's own boot markers and draws the
+// conclusion; this is the evidence it draws it from.
 func (m *Monitor) warnNeverDropped(at time.Time) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var lines []string
 	for _, name := range m.order {
 		w := m.seen[name]
-		if !w.targeted || w.dropped || w.warned || !m.dropWaitElapsed(at) {
+		if w.dropped || w.warned || !m.dropWaitElapsed(at) {
 			continue
 		}
-		w.warned = true
-		lines = append(lines,
-			hostLine(name, "[warn] answered every probe; it never left the network"))
+		switch w.role {
+		case roleTarget:
+			w.warned = true
+			lines = append(lines,
+				hostLine(name, "[warn] answered every probe; it never left the network"))
+		case roleCarried:
+			// Only worth saying once the parent has actually gone down. A
+			// hypervisor that ignored its own reboot explains a still-answering
+			// guest completely, and it already has a line of its own.
+			parent, watched := m.seen[w.host.RunsOn]
+			if !watched || !parent.dropped {
+				continue
+			}
+			w.warned = true
+			lines = append(lines, hostLine(name,
+				"[warn] answered every probe while %s went down; it may no longer run there",
+				w.host.RunsOn))
+		case roleDependent:
+		}
 	}
 	return lines
 }

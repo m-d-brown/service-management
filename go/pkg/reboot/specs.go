@@ -11,10 +11,13 @@ import (
 
 // Spec field keys, as they appear in a host spec.
 const (
-	keyAddr   = "addr"
-	keyUser   = "user"
-	keySSHArg = "ssh-arg"
-	keyAfter  = "after"
+	keyAddr    = "addr"
+	keyUser    = "user"
+	keySSHArg  = "ssh-arg"
+	keyAfter   = "after"
+	keyRunsOn  = "runs-on"
+	keyNotWith = "not-with"
+	keyReady   = "ready"
 )
 
 // ParseSpec parses one host spec.
@@ -22,13 +25,30 @@ const (
 // A spec is a host name followed by comma-separated key=value fields:
 //
 //	web1
-//	web1,addr=10.0.0.4,user=admin,after=hypervisor-1
-//	vm-a,addr=10.0.0.21,after=hv1
+//	web1,addr=10.0.0.4,user=admin,after=dns1
+//	vm-a,addr=10.0.0.21,runs-on=hv1
+//	dns1,not-with=dns2,ready=dig +short @127.0.0.1 example.internal
 //
-// The after and ssh-arg keys may repeat. A spec is a CSV record, so a value
-// containing a comma is written as a quoted field:
+// The connection fields are addr, user and ssh-arg. The rest say how the host
+// relates to the fleet, and each says a different thing:
+//
+//	after=HOST     do not reboot this host until HOST is back. An ordering and
+//	               nothing more; it makes no claim that HOST's reboot affects
+//	               this host. Repeatable.
+//	runs-on=HOST   this host is hosted by HOST, so rebooting HOST restarts it.
+//	               Implies after=HOST, and adds the claim that after refuses to
+//	               make. Given at most once: a host is in one place at a time.
+//	not-with=HOST  never reboot this host in the same tier as HOST. Symmetric
+//	               and unordered — either may go first. Repeatable.
+//	ready=COMMAND  this host counts as back only once COMMAND succeeds on it
+//	               over SSH. Defaults to true, meaning a completed login.
+//
+// The after, ssh-arg and not-with keys may repeat; runs-on and ready may not.
+// A spec is a CSV record, so a value containing a comma is written as a quoted
+// field, which is also how a readiness command carrying one is written:
 //
 //	web1,"ssh-arg=-oCiphers=aes128-ctr,aes256-ctr"
+//	dns1,"ready=systemctl is-active named,nsd"
 func ParseSpec(spec string) (Host, error) {
 	fields, err := splitFields(spec)
 	if err != nil {
@@ -77,6 +97,22 @@ func hostFromFields(fields []string) (Host, error) {
 			host.SSHArgs = append(host.SSHArgs, value)
 		case keyAfter:
 			host.After = append(host.After, value)
+		case keyRunsOn:
+			if host.RunsOn != "" {
+				return Host{}, fmt.Errorf(
+					"host %q: runs-on is given more than once; a host runs on at most one other",
+					host.Name)
+			}
+			host.RunsOn = value
+		case keyNotWith:
+			host.NotWith = append(host.NotWith, value)
+		case keyReady:
+			if host.Ready != "" {
+				return Host{}, fmt.Errorf(
+					"host %q: ready is given more than once; write one command, joining tests with &&",
+					host.Name)
+			}
+			host.Ready = value
 		default:
 			return Host{}, fmt.Errorf("host %q: unknown field %q", host.Name, key)
 		}
@@ -99,9 +135,14 @@ func FormatSpec(h Host) string {
 	for _, arg := range h.SSHArgs {
 		add(keySSHArg, arg)
 	}
+	add(keyRunsOn, h.RunsOn)
 	for _, after := range h.After {
 		add(keyAfter, after)
 	}
+	for _, peer := range h.NotWith {
+		add(keyNotWith, peer)
+	}
+	add(keyReady, h.Ready)
 
 	var buf strings.Builder
 	writer := csv.NewWriter(&buf)

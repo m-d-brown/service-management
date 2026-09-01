@@ -114,6 +114,16 @@ SSH, and proves each one actually restarted.
 
 - **Topological Sequence (DAG)**: Dynamically groups hosts into execution tiers
   based on topological dependency sorting (Kahn's Algorithm).
+- **Four Kinds of Dependency, Not One**: `after` orders two reboots and claims
+  nothing else; `runs-on` says a reboot of the parent restarts this host;
+  `not-with` forbids two hosts going down together without ordering them; and
+  `ready` says what "back" means for a host others are waiting on. See
+  [Relationships](#relationships).
+- **Carried Reboots Are Credited, Not Repeated**: A guest declared with
+  `runs-on` has its boot identity read before its hypervisor goes down and again
+  after. If it provably restarted, it is confirmed and dropped from the tier
+  that meant to reboot it, rather than being power-cycled a second time minutes
+  after the first.
 - **No inventory format, no runner**: hosts, their addresses, their SSH user and
   their ordering are given as arguments or piped in on stdin. Nothing about
   Ansible is compiled in; see
@@ -161,20 +171,123 @@ pair and wins: `--user` supplies the login user only for hosts whose spec has no
 
 **Host spec fields** (written inside a `HOST_SPEC`, no dashes):
 
-| Field     | Meaning                                                              |
-| --------- | -------------------------------------------------------------------- |
-| `addr`    | Address to ping and SSH to (default: the host name)                  |
-| `user`    | SSH login user (default: `--user`)                                   |
-| `ssh-arg` | Extra `ssh` argument; repeatable                                     |
-| `after`   | Reboot this host only once the named host is back online; repeatable |
+| Field      | Meaning                                                                 |
+| ---------- | ----------------------------------------------------------------------- |
+| `addr`     | Address to ping and SSH to (default: the host name)                     |
+| `user`     | SSH login user (default: `--user`)                                      |
+| `ssh-arg`  | Extra `ssh` argument; repeatable                                        |
+| `after`    | Reboot this host only once the named host is back online; repeatable    |
+| `runs-on`  | The host this one is hosted by, whose reboot restarts it; at most one   |
+| `not-with` | Never reboot this host in the same tier as the named one; repeatable    |
+| `ready`    | Command proving this host is back, run on it over SSH (default: `true`) |
+
+The last four are the [relationships](#relationships), and they say four
+different things. `runs-on`, `not-with` and `ready` may be omitted entirely; a
+fleet that uses only `after` behaves exactly as it did before they existed.
 
 Describing a small fleet entirely on the command line:
 
 ```shell
 reboot-orchestrator --user ops \
     hypervisor-1,addr=10.0.0.5 \
-    vm-a,addr=10.0.0.21,user=admin,after=hypervisor-1
+    vm-a,addr=10.0.0.21,user=admin,runs-on=hypervisor-1
 ```
+
+#### Relationships
+
+"`a` depends on `b`" is at least four different claims, and they do not behave
+the same way. Writing them all as one edge means every part of the tool has to
+assume the weakest reading of all of them, which is what `after` alone did.
+
+##### `after=HOST` — ordering, and nothing else
+
+> Do not reboot me until `HOST` has rebooted and is back.
+
+Repeatable. It says nothing about cause: it never claims `HOST`'s reboot affects
+this host, which is why nothing is concluded from a host that stayed up while
+the host it follows went down. Use it whenever the only fact is a sequence.
+
+Which direction to write is yours to decide, and the two cases order opposite
+ways:
+
+- **`a` needs `b` to boot** — `a` mounts NFS from `b`, resolves DNS during early
+  boot, or routes through `b`. Booting without `b` leaves a permanently broken
+  host: failed mounts, crash-looping units, hand repair. Write `a,after=b` so
+  `b` is back first.
+- **`a` only degrades while `b` is away** — `a` caches and retries, and boots
+  fine on its own. The failure is transient and self-healing. Write `b,after=a`
+  so `a` reboots into a world where `b` is still up, and `b`'s outage lands when
+  nothing is booting.
+
+The tool cannot tell these apart, because the difference is whether the failure
+is permanent or transient, which only you know.
+
+##### `runs-on=HOST` — hosting, which is a claim about cause
+
+> I am hosted by `HOST`. Rebooting `HOST` restarts me.
+
+A hypervisor to its guest, a guest to its container. Given at most once — a host
+is in one place at a time. It carries the ordering of `after` and adds the claim
+`after` refuses to make, which buys four things:
+
+1. **The carried reboot is credited, not repeated.** The guest's boot identity
+   is read before the parent goes down and again after it returns. If it
+   changed, the guest provably restarted: it is reported as confirmed and
+   dropped from the tier that meant to reboot it. Written as a bare `after`, the
+   second reboot is unavoidable, because nothing ever claimed the first one
+   happened.
+2. **The drop is expected.** A guest is watched as a host that should go down,
+   not as one that merely might.
+3. **A guest that stayed up is a finding.** Answering every probe while its
+   hypervisor went down contradicts the declaration, and the declaration is the
+   likelier thing to be wrong — a guest migrated elsewhere looks exactly like
+   this.
+4. **Hosting is transitive.** A container on a guest on a hypervisor is carried
+   by one reboot of the hypervisor.
+
+Nothing is taken on the declaration alone. It decides which hosts are worth
+asking; each host then answers for itself, so a hypervisor that quietly migrated
+a guest away cannot cause that guest's reboot to be skipped. Crediting needs
+proof, so it does not happen under `--skip-boot-verification`.
+
+##### `not-with=HOST` — mutual exclusion, with no ordering
+
+> Never reboot me in the same tier as `HOST`.
+
+The other half of an HA pair, another member of a quorum. Repeatable, and
+**symmetric**: declared on either host it binds both, because it is a fact about
+the pair. Either may go first; they simply may not go together, so the tool
+picks a deterministic order rather than making you invent one.
+
+Faked with `after`, an HA pair gets an arbitrary order you did not mean _and_ a
+causal claim that is not true. Two guests of the same hypervisor may exclude
+each other — the reboots this tool issues can always be separated — but a guest
+may not exclude the hypervisor it runs on, which is rejected as a fleet that
+cannot exist.
+
+##### `ready=COMMAND` — what "back" means for this host
+
+> I am not back until `COMMAND` succeeds on me over SSH.
+
+Only the exit status is read. The default is `true`, meaning a completed login,
+which is all that can be assumed of a host that declared nothing — and already
+far more than answering ping, which the kernel does long before `sshd` accepts a
+connection.
+
+Declare it on the **provider**, not on the hosts waiting for it: it gates
+everyone ordered after that host. A DNS server accepts logins well before
+`named` answers queries, and the tier behind it is waiting for the second
+moment, not the first.
+
+```shell
+reboot-orchestrator \
+    "dns1,addr=10.0.0.41,not-with=dns2,ready=dig +short @127.0.0.1 gateway.internal" \
+    dns2,addr=10.0.0.42 \
+    web1,addr=10.0.0.30,after=dns1,after=dns2
+```
+
+A command containing a comma is written as a quoted CSV field, the same way any
+other spec value is: `"ready=systemctl is-active named,nsd"`.
 
 Specs also arrive on stdin, one per line — a pipe is detected automatically, or
 name a file with `--hosts-from`. Hosts read that way are **context**: they can
@@ -220,11 +333,13 @@ was proven to have skipped its reboot; `1` otherwise.
 ```text
 The following hosts will be rebooted (parents first, nested dependents last):
 └── hypervisor-1
-    └── vm-a
+    └── vm-a (runs on hypervisor-1)
 
 === Executing Tier: 1 ===
 Recording pre-reboot boot state...
   hypervisor-1: $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
+Recording boot state of the hosts this tier will carry down...
+  vm-a: $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new admin@10.0.0.21 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
 Watching hypervisor-1, vm-a for the reboot (sampling every 1s)...
   hypervisor-1: $ ping -c 1 -W 1 10.0.0.5
   vm-a: $ ping -c 1 -W 1 10.0.0.21
@@ -236,13 +351,16 @@ hypervisor-1: [ping] answers ping again at 09:14:49; waiting for SSH
 hypervisor-1: [back] is back at 09:15:02, after 55s down
 vm-a: [ping] answers ping again at 09:15:21; waiting for SSH
 vm-a: [back] is back at 09:15:29, after 1m 22s down
+Checking the hosts this tier carried down...
+  vm-a: $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new admin@10.0.0.21 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
+  vm-a: [✓] rebooted with hypervisor-1: boot_id changed (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192 -> b83a5c17-6d4e-4029-9c3b-5f1a2e8d47c0)
 Verifying boot state changed...
   hypervisor-1: $ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@10.0.0.5 'printf "boot_id=%s\n" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; printf "uptime=%s\n" "$(cut -d" " -f1 /proc/uptime 2>/dev/null)"'
   hypervisor-1: [✓] rebooted: boot_id changed (9c2f1a44-3b7e-4d51-9f0a-1b2c3d4e5f60 -> 1d7b9e02-5a3c-4f18-8e6d-7a9b0c1d2e3f)
 
 === Executing Tier: 2 ===
-... (vm-a follows the same probe, reboot, ping, verify sequence) ...
-  vm-a: [✓] rebooted: boot_id changed (44e1c0d3-8f2b-4a67-b1c9-0d5e6f708192 -> b83a5c17-6d4e-4029-9c3b-5f1a2e8d47c0)
+  vm-a: skipping — already rebooted with hypervisor-1
+Tier 2 was rebooted by the tier hosting it; nothing to do.
 
 === Reboot Verification Summary ===
 Confirmed rebooted: 2  Not rebooted: 0  Unverified: 0
@@ -250,11 +368,18 @@ Confirmed rebooted: 2  Not rebooted: 0  Unverified: 0
 All tiers complete. Reboot orchestration finished successfully.
 ```
 
+Two hosts rebooted, one reboot command issued. Had `vm-a` been written
+`after=hypervisor-1` instead, tier 2 would have power-cycled it a second time,
+ninety seconds after the first — because a bare ordering never claimed the first
+one happened.
+
 A host that was sent a reboot and answered ping throughout without actually
 restarting is called out and fails the run rather than being reported as a
-success. Dependents are not: they are watched in case a target's reboot takes
-them down, not because anything was asked of them, and an `after` edge orders
-the two reboots without promising that one causes the other.
+success. So is a guest that answered every probe while the machine it runs on
+went down, which contradicts its `runs-on` and usually means it has been
+migrated elsewhere. Plain `after` dependents are neither: they are watched in
+case a target's reboot takes them down, not because anything was asked of them,
+and that edge orders the two reboots without promising one causes the other.
 
 ```text
 vm-a: [warn] answered every probe; it never left the network
@@ -287,12 +412,20 @@ write by hand.
 | `ansible_user`              | `user`                       |
 | `ansible_ssh_common_args`   | one `ssh-arg` per shell word |
 | `depends_on`                | one `after` per entry        |
+| `runs_on`                   | `runs-on`                    |
+| `not_with`                  | one `not-with` per entry     |
+| `ready`                     | `ready`                      |
 
 Groups nest arbitrarily deep through `children`, and a host appearing in several
-groups accumulates the variables from all of them. Dependencies are validated
-against the inventory, so a typo is caught before the orchestrator is handed the
-topology. Every other inventory variable is ignored rather than rejected — an
-inventory that also serves Ansible itself works untouched.
+groups accumulates the variables from all of them. Every host a relationship
+names is validated against the inventory, so a typo is reported against the file
+it was typed into rather than against the spec stream it became. Whether the
+relationships contradict one another — a hosting chain that closes on itself, an
+exclusion between a guest and the hypervisor it cannot help rebooting with — is
+settled once in the orchestrator, against the full host set the run will act on,
+which can be wider than any single inventory. Every other inventory variable is
+ignored rather than rejected — an inventory that also serves Ansible itself
+works untouched.
 
 **Example inventory:**
 
@@ -310,10 +443,19 @@ all:
           ip_addr: 10.0.0.21
           ansible_user: admin
           ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
-          depends_on: [hypervisor-1]
+          runs_on: hypervisor-1
         vm-b:
           ip_addr: 10.0.0.22
-          depends_on: [hypervisor-1]
+          runs_on: hypervisor-1
+    resolvers:
+      hosts:
+        dns1:
+          ip_addr: 10.0.0.41
+          not_with: [dns2]
+          ready: systemctl is-active named
+        dns2:
+          ip_addr: 10.0.0.42
+          ready: systemctl is-active named
     apps:
       hosts:
         web1:
@@ -321,7 +463,13 @@ all:
           depends_on:
             - vm-a
             - vm-b
+            - dns1
 ```
+
+`vm-a` and `vm-b` use `runs_on` because rebooting the hypervisor genuinely
+restarts them, which lets that reboot be credited instead of delivered twice.
+`web1` uses `depends_on`, because nothing about a guest's reboot restarts `web1`
+— it just must not come up before them.
 
 Only the variables in the table above are read; the group names are the
 operator's own and carry no meaning here beyond nesting. The output below is
@@ -337,10 +485,12 @@ ansible-inventory-reboot-hosts [--inventory FILE] | reboot-orchestrator [flags] 
 
 ```text
 $ ansible-inventory-reboot-hosts -i inventory.yml
+dns1,addr=10.0.0.41,not-with=dns2,ready=systemctl is-active named
+dns2,addr=10.0.0.42,ready=systemctl is-active named
 hypervisor-1,addr=10.0.0.5,user=root
-vm-a,addr=10.0.0.21,user=admin,ssh-arg=-o,ssh-arg=StrictHostKeyChecking=no,after=hypervisor-1
-vm-b,addr=10.0.0.22,after=hypervisor-1
-web1,addr=10.0.0.30,after=vm-a,after=vm-b
+vm-a,addr=10.0.0.21,user=admin,ssh-arg=-o,ssh-arg=StrictHostKeyChecking=no,runs-on=hypervisor-1
+vm-b,addr=10.0.0.22,runs-on=hypervisor-1
+web1,addr=10.0.0.30,after=vm-a,after=vm-b,after=dns1
 ```
 
 ### `proxmox-retrust-host-keys`
