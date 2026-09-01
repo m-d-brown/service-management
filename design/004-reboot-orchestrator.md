@@ -162,8 +162,26 @@ before these existed.
 
 `ansible-inventory-reboot-hosts` converts an Ansible YAML inventory into host
 specs on stdout, reading `ip_addr`/`ansible_host`, `ansible_user`,
-`ansible_ssh_common_args`, and `depends_on`. Groups nest through `children`, and
-a host in several groups accumulates variables from all of them.
+`ansible_ssh_common_args`, `depends_on`, `runs_on`, `not_with` and `ready`.
+Groups nest through `children`, and a host in several groups accumulates
+variables from all of them.
+
+The two ends describe the same fact from opposite directions, and the converter
+is the hinge. An inventory states what is true of the host a line is written on:
+`depends_on` names what that host consumes. The orchestrator wants the only
+thing it can act on, an order. So each dependency is inverted here — a host is
+rebooted _before_ the hosts it depends on, and the `after` field lands on the
+provider rather than on the consumer that declared it.
+
+Inverted, rather than taken at face value, because a consumer rebooted after its
+provider comes up into the outage that provider's own restart just opened,
+booting without the DNS, storage or gateway it was waiting on. Rebooting it
+while the service is still there, and the provider once nothing is mid-boot
+behind it, puts the gap where nothing is starting up. A host that genuinely
+cannot boot without the service is the other claim, and `runs_on` is how it is
+made. Deriving the order rather than writing it also keeps the inventory
+readable in the one case where the two diverge most: a provider deliberately
+rebooted last would otherwise have to enumerate every client that consumes it.
 
 The two commands are joined by a pipe:
 

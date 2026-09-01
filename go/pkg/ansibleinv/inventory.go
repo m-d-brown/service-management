@@ -41,8 +41,11 @@ type hostVars struct {
 	AnsibleUser scalar `yaml:"ansible_user"`
 	// SSHCommonArgs is one string of extra ssh arguments.
 	SSHCommonArgs scalar `yaml:"ansible_ssh_common_args"`
-	// DependsOn names the hosts that must be back online first. It is an
-	// ordering and makes no claim about what a reboot of those hosts does here.
+	// DependsOn names the hosts this one draws a service from — a resolver, a
+	// gateway, a database. It is read in the direction it is written: the host
+	// carrying the key is the consumer, and the hosts named are what it
+	// consumes. The reboot ordering it implies is the reverse, and is derived
+	// rather than written; see invertDependencies.
 	DependsOn []string `yaml:"depends_on"`
 	// RunsOn names the host this one is hosted by, whose reboot restarts it.
 	RunsOn scalar `yaml:"runs_on"`
@@ -132,7 +135,64 @@ func Parse(data []byte) ([]reboot.Host, error) {
 		}
 		hosts = append(hosts, host)
 	}
-	return hosts, validateDependencies(hosts)
+	if err := validateDependencies(hosts); err != nil {
+		return nil, err
+	}
+	return invertDependencies(hosts), nil
+}
+
+// invertDependencies turns each declared dependency into the reboot ordering it
+// implies: a host is rebooted before the hosts it depends on, so the provider
+// goes last.
+//
+// The inventory and the spec stream deliberately describe the same fact from
+// opposite ends, and this is the hinge between them. An operator writes what is
+// true of a host — "I use the resolver" — on the host it is true of, so every
+// line reads as a sentence about its own subject. The orchestrator wants the
+// only thing it can act on, an order. Deriving one from the other here is what
+// keeps either from having to be written backwards: expressed as an order, a
+// resolver deliberately rebooted last has to name every client that queries it,
+// and "the resolver depends on its clients" is a line nobody reads twice the
+// same way.
+//
+// Last, rather than first, because a consumer rebooted after its provider comes
+// up into the outage that provider's own restart just opened — booting without
+// the DNS, gateway or storage it was waiting on. Rebooting it while the service
+// is still there, and the provider once nothing is mid-boot behind it, puts the
+// gap where nothing is starting up. A host that genuinely cannot boot without
+// the service is a different claim, and says so with runs_on.
+func invertDependencies(hosts []reboot.Host) []reboot.Host {
+	position := make(map[string]int, len(hosts))
+	for i, host := range hosts {
+		position[host.Name] = i
+	}
+
+	// Detached first, so a dependency still waiting to be inverted is never
+	// mistaken for an ordering already in place. Left in, an edge appended to a
+	// provider would be read as that provider's own declaration once the loop
+	// reached it, and inverted a second time.
+	declared := make([][]string, len(hosts))
+	for i := range hosts {
+		declared[i], hosts[i].After = hosts[i].After, nil
+	}
+
+	for i, deps := range declared {
+		for _, dep := range deps {
+			// validateDependencies has already rejected a name no host answers
+			// to, so the lookup cannot miss.
+			provider := position[dep]
+			hosts[provider].After = append(hosts[provider].After, hosts[i].Name)
+		}
+	}
+
+	// Two consumers of one provider arrive in whatever order the hosts were
+	// sorted into; sorting again keeps a provider's spec line byte-identical
+	// between runs, which is what makes the stream diffable.
+	for i := range hosts {
+		slices.Sort(hosts[i].After)
+		hosts[i].After = slices.Compact(hosts[i].After)
+	}
+	return hosts
 }
 
 // flatten records each appearance of a host in a group and everything nested

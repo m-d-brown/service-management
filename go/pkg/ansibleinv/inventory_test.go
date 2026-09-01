@@ -37,10 +37,12 @@ all:
 		t.Fatal(err)
 	}
 
+	// Each depends_on comes back as the ordering it implies, attached to the
+	// host depended on: vm-a uses hv1, so hv1 is what reboots after vm-a.
 	want := []reboot.Host{
-		{Name: "hv1", Addr: "10.0.0.5", User: "root"},
-		{Name: "vm-a", Addr: "10.0.0.21", After: []string{"hv1"}},
-		{Name: "web1", Addr: "10.0.0.30", After: []string{"vm-a"}},
+		{Name: "hv1", Addr: "10.0.0.5", User: "root", After: []string{"vm-a"}},
+		{Name: "vm-a", Addr: "10.0.0.21", After: []string{"web1"}},
+		{Name: "web1", Addr: "10.0.0.30"},
 	}
 	if !reflect.DeepEqual(hosts, want) {
 		t.Errorf("Parse() = %+v, want %+v", hosts, want)
@@ -114,19 +116,23 @@ all:
 		t.Fatal(err)
 	}
 
+	byName := map[string]reboot.Host{}
 	for _, host := range hosts {
-		if host.Name != "web1" {
-			continue
-		}
-		if host.Addr != "10.0.0.30" {
-			t.Errorf("addr = %q, want it kept from the network group", host.Addr)
-		}
-		if !reflect.DeepEqual(host.After, []string{"hv1"}) {
-			t.Errorf("after = %v, want it added by the ordered group", host.After)
-		}
-		return
+		byName[host.Name] = host
 	}
-	t.Fatal("web1 is missing from the parsed inventory")
+
+	web1, ok := byName["web1"]
+	if !ok {
+		t.Fatal("web1 is missing from the parsed inventory")
+	}
+	if web1.Addr != "10.0.0.30" {
+		t.Errorf("addr = %q, want it kept from the network group", web1.Addr)
+	}
+	// The dependency the second group added survives the merge, and lands as
+	// an ordering on hv1 rather than on the host that declared it.
+	if !reflect.DeepEqual(byName["hv1"].After, []string{"web1"}) {
+		t.Errorf("hv1 after = %v, want [web1] from the ordered group", byName["hv1"].After)
+	}
 }
 
 func TestParseSplitsSSHCommonArgs(t *testing.T) {
@@ -300,11 +306,19 @@ all:
 	if got := byName["vm-a"].RunsOn; got != "hv1" {
 		t.Errorf("vm-a RunsOn = %q, want hv1", got)
 	}
-	if got := byName["vm-a"].After; len(got) != 0 {
-		t.Errorf("vm-a After = %v, want none: runs_on is not depends_on", got)
+	if got := byName["hv1"].After; len(got) != 0 {
+		t.Errorf("hv1 After = %v, want none: runs_on is not depends_on", got)
 	}
-	if got := byName["web1"].After; !reflect.DeepEqual(got, []string{"vm-a", "dns1"}) {
-		t.Errorf("web1 After = %v, want [vm-a dns1]", got)
+	// web1 declared both dependencies, and both come back as orderings on the
+	// providers — web1 itself is left free to reboot first.
+	if got := byName["web1"].After; len(got) != 0 {
+		t.Errorf("web1 After = %v, want none: it depends, so it goes first", got)
+	}
+	if got := byName["vm-a"].After; !reflect.DeepEqual(got, []string{"web1"}) {
+		t.Errorf("vm-a After = %v, want [web1]", got)
+	}
+	if got := byName["dns1"].After; !reflect.DeepEqual(got, []string{"web1"}) {
+		t.Errorf("dns1 After = %v, want [web1]", got)
 	}
 	if got := byName["web1"].RunsOn; got != "" {
 		t.Errorf("web1 RunsOn = %q, want empty", got)
@@ -314,6 +328,51 @@ all:
 	}
 	if got, want := byName["dns1"].Ready, "systemctl is-active named"; got != want {
 		t.Errorf("dns1 Ready = %q, want %q", got, want)
+	}
+}
+
+func TestParseInvertsDependenciesOntoTheProvider(t *testing.T) {
+	// Written on the consumer, where it is a true sentence about its own
+	// subject; read as the ordering it implies, where the provider goes last.
+	// The resolver never has to name a client, and no client has to state an
+	// order — which is the whole point of deriving one from the other.
+	inventory := `
+all:
+  hosts:
+    dns1:
+      ip_addr: 10.0.0.41
+    web1:
+      depends_on: [dns1]
+    web2:
+      depends_on: [dns1, dns1]
+    app1:
+      depends_on: [dns1, web1]
+`
+	hosts, err := Parse([]byte(inventory))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := map[string][]string{}
+	for _, host := range hosts {
+		after[host.Name] = host.After
+	}
+
+	// Sorted and deduplicated, so a repeated declaration costs nothing and the
+	// provider's spec line is byte-identical between runs.
+	if got, want := after["dns1"], []string{"app1", "web1", "web2"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("dns1 After = %v, want %v", got, want)
+	}
+	// A host can be both, and each role is read separately.
+	if got, want := after["web1"], []string{"app1"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("web1 After = %v, want %v", got, want)
+	}
+	// A host that only consumes is ordered by nothing, and reboots first.
+	if got := after["app1"]; len(got) != 0 {
+		t.Errorf("app1 After = %v, want none: it depends on others, so it goes first", got)
+	}
+	if got := after["web2"]; len(got) != 0 {
+		t.Errorf("web2 After = %v, want none", got)
 	}
 }
 

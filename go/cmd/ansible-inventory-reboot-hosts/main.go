@@ -37,6 +37,9 @@ func main() {
 				"Convert an Ansible YAML inventory into reboot-orchestrator host specs,\n"+
 				"one per line on stdout. Reads ip_addr/ansible_host, ansible_user,\n"+
 				"ansible_ssh_common_args, depends_on, runs_on, not_with and ready.\n\n"+
+				"depends_on names what a host consumes, and the ordering is derived from\n"+
+				"it: a host reboots BEFORE the hosts it depends on, so a provider comes\n"+
+				"last and nothing boots into the outage its restart opens.\n\n"+
 				"Pipe the result into reboot-orchestrator:\n"+
 				"  %s -i inventory.yml | reboot-orchestrator vm-a vm-b\n\nFlags:\n",
 			os.Args[0], os.Args[0])

@@ -406,15 +406,15 @@ write by hand.
 
 **Inventory variables read:**
 
-| Variable                    | Becomes                      |
-| --------------------------- | ---------------------------- |
-| `ip_addr` or `ansible_host` | `addr` (`ip_addr` wins)      |
-| `ansible_user`              | `user`                       |
-| `ansible_ssh_common_args`   | one `ssh-arg` per shell word |
-| `depends_on`                | one `after` per entry        |
-| `runs_on`                   | `runs-on`                    |
-| `not_with`                  | one `not-with` per entry     |
-| `ready`                     | `ready`                      |
+| Variable                    | Becomes                                  |
+| --------------------------- | ---------------------------------------- |
+| `ip_addr` or `ansible_host` | `addr` (`ip_addr` wins)                  |
+| `ansible_user`              | `user`                                   |
+| `ansible_ssh_common_args`   | one `ssh-arg` per shell word             |
+| `depends_on`                | reversed: one `after` on each host named |
+| `runs_on`                   | `runs-on`                                |
+| `not_with`                  | one `not-with` per entry                 |
+| `ready`                     | `ready`                                  |
 
 Groups nest arbitrarily deep through `children`, and a host appearing in several
 groups accumulates the variables from all of them. Every host a relationship
@@ -469,7 +469,23 @@ all:
 `vm-a` and `vm-b` use `runs_on` because rebooting the hypervisor genuinely
 restarts them, which lets that reboot be credited instead of delivered twice.
 `web1` uses `depends_on`, because nothing about a guest's reboot restarts `web1`
-— it just must not come up before them.
+— it merely draws a service from them.
+
+**`depends_on` is written in the direction it reads, and the ordering is derived
+from it.** Every line states what is true of the host it is written on: `web1`
+consumes `vm-a`, `vm-b` and `dns1`, so that is where it is said. The reboot
+order that implies is the reverse — `web1` first, its providers last — and the
+converter derives it, moving each edge onto the host depended on. That is why
+`web1`'s own spec line below carries no `after` at all, while `dns1`, `vm-a` and
+`vm-b` each carry one naming `web1`.
+
+The reverse, and not the obvious way round, because a consumer rebooted _after_
+its provider comes up into the outage that provider's own restart just opened,
+booting without the DNS, storage or gateway it was waiting on. Rebooting it
+while the service is still there, and the provider once nothing is mid-boot
+behind it, puts the gap where nothing is starting up. A host that genuinely
+cannot boot without the service is the other claim, and `runs_on` is how it is
+made.
 
 Only the variables in the table above are read; the group names are the
 operator's own and carry no meaning here beyond nesting. The output below is
@@ -485,13 +501,17 @@ ansible-inventory-reboot-hosts [--inventory FILE] | reboot-orchestrator [flags] 
 
 ```text
 $ ansible-inventory-reboot-hosts -i inventory.yml
-dns1,addr=10.0.0.41,not-with=dns2,ready=systemctl is-active named
+dns1,addr=10.0.0.41,after=web1,not-with=dns2,ready=systemctl is-active named
 dns2,addr=10.0.0.42,ready=systemctl is-active named
 hypervisor-1,addr=10.0.0.5,user=root
-vm-a,addr=10.0.0.21,user=admin,ssh-arg=-o,ssh-arg=StrictHostKeyChecking=no,runs-on=hypervisor-1
-vm-b,addr=10.0.0.22,runs-on=hypervisor-1
-web1,addr=10.0.0.30,after=vm-a,after=vm-b,after=dns1
+vm-a,addr=10.0.0.21,user=admin,ssh-arg=-o,ssh-arg=StrictHostKeyChecking=no,runs-on=hypervisor-1,after=web1
+vm-b,addr=10.0.0.22,runs-on=hypervisor-1,after=web1
+web1,addr=10.0.0.30
 ```
+
+Note where the `after` fields ended up. `web1` declared all three dependencies
+and carries none of them; each provider carries one naming `web1`, because
+`web1` is what they must wait for.
 
 ### `proxmox-retrust-host-keys`
 
